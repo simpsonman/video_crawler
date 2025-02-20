@@ -34,26 +34,57 @@ function sanitizeFilename(filename) {
   return encodeURIComponent(safeFilename) // URL 인코딩 적용
 }
 
-app.post('/api/download/youtube', async (req, res) => {
+// 비디오 정보 및 포맷 가져오기
+app.post('/api/youtube/info', async (req, res) => {
   try {
     const { url } = req.body
-    console.log('Received URL:', url)
+    if (!url) {
+      return res.status(400).json({ error: 'URL이 필요합니다' })
+    }
+
+    const info = await ytdl.getInfo(url)
+    const formats = info.formats
+      .filter((format) => format.hasVideo && format.hasAudio)
+      .map((format) => ({
+        itag: format.itag,
+        quality: format.qualityLabel,
+        container: format.container,
+        size: format.contentLength,
+        fps: format.fps,
+      }))
+      .sort((a, b) => parseInt(b.quality) - parseInt(a.quality))
+
+    res.json({
+      title: info.videoDetails.title,
+      thumbnail: info.videoDetails.thumbnails[0].url,
+      formats,
+    })
+  } catch (error) {
+    console.error('Error:', error)
+    res.status(500).json({ error: '비디오 정보를 가져오는데 실패했습니다' })
+  }
+})
+
+// 다운로드 엔드포인트 수정
+app.post('/api/download/youtube', async (req, res) => {
+  try {
+    const { url, itag } = req.body // itag 추가
+    console.log('Received URL:', url, 'itag:', itag)
 
     if (!url) {
       return res.status(400).json({ error: 'URL이 필요합니다' })
     }
 
     const info = await ytdl.getInfo(url)
-    const format = ytdl.chooseFormat(info.formats, {
-      quality: 'highestvideo',
-      filter: 'videoandaudio',
-    })
+    const format = itag
+      ? info.formats.find((f) => f.itag === itag)
+      : ytdl.chooseFormat(info.formats, { quality: 'highest', filter: 'videoandaudio' })
 
     const safeFilename = sanitizeFilename(info.videoDetails.title)
     res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp4`)
     res.setHeader('Content-Type', 'video/mp4')
 
-    ytdl(url, { format: format }).pipe(res)
+    ytdl(url, { format }).pipe(res)
   } catch (error) {
     console.error('Download Error:', error)
     res.status(500).json({

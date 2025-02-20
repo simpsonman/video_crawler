@@ -15,9 +15,30 @@
         </template>
       </el-input>
 
-      <el-button type="primary" @click="handleDownload" :loading="loading" size="large">
-        다운로드
+      <el-button type="primary" @click="getVideoInfo" :loading="loading" size="large">
+        정보 가져오기
       </el-button>
+    </div>
+
+    <!-- 비디오 정보 표시 -->
+    <div v-if="videoInfo" class="video-info">
+      <h3>{{ videoInfo.title }}</h3>
+      <img :src="videoInfo.thumbnail" alt="썸네일" class="thumbnail" />
+
+      <div class="format-selector">
+        <el-select v-model="selectedFormat" placeholder="해상도 선택" size="large">
+          <el-option
+            v-for="format in videoInfo.formats"
+            :key="format.itag"
+            :label="`${format.quality} (${format.fps}fps)`"
+            :value="format.itag"
+          />
+        </el-select>
+
+        <el-button type="success" @click="handleDownload" :loading="downloading" size="large">
+          다운로드
+        </el-button>
+      </div>
     </div>
 
     <div v-if="error" class="error-message">
@@ -33,13 +54,12 @@ import axios from 'axios'
 
 const url = ref('')
 const loading = ref(false)
+const downloading = ref(false)
 const error = ref('')
+const videoInfo = ref(null)
+const selectedFormat = ref(null)
 
-const API_URL = import.meta.env.PROD
-  ? '/api/download/youtube' // 프로덕션
-  : 'http://localhost:5000/api/download/youtube' // 개발
-
-const handleDownload = async () => {
+const getVideoInfo = async () => {
   if (!url.value) {
     error.value = 'URL을 입력해주세요'
     return
@@ -49,48 +69,52 @@ const handleDownload = async () => {
   error.value = ''
 
   try {
+    const response = await axios.post('/api/youtube/info', { url: url.value })
+    videoInfo.value = response.data
+    selectedFormat.value = videoInfo.value.formats[0]?.itag // 최고 품질 기본 선택
+  } catch (err) {
+    console.error('Error:', err)
+    error.value = '비디오 정보를 가져오는데 실패했습니다'
+  } finally {
+    loading.value = false
+  }
+}
+
+const handleDownload = async () => {
+  if (!selectedFormat.value) {
+    error.value = '해상도를 선택해주세요'
+    return
+  }
+
+  downloading.value = true
+  error.value = ''
+
+  try {
     const response = await axios.post(
-      API_URL,
-      { url: url.value },
+      '/api/download/youtube',
+      {
+        url: url.value,
+        itag: selectedFormat.value,
+      },
       {
         responseType: 'blob',
-        timeout: 30000,
-        headers: {
-          'Content-Type': 'application/json',
-        },
       },
     )
-
-    // 에러 응답 체크
-    if (response.data instanceof Blob && response.data.type === 'application/json') {
-      const text = await response.data.text()
-      const json = JSON.parse(text)
-      throw new Error(json.error || '다운로드 중 오류가 발생했습니다')
-    }
 
     const blob = new Blob([response.data], { type: 'video/mp4' })
     const downloadUrl = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = downloadUrl
-    link.download = `youtube-video-${Date.now()}.mp4`
+    link.download = `${videoInfo.value.title}.mp4`
     document.body.appendChild(link)
     link.click()
     window.URL.revokeObjectURL(downloadUrl)
     document.body.removeChild(link)
-
-    url.value = ''
   } catch (err) {
     console.error('Download error:', err)
-    if (err.response) {
-      console.error('Error response:', err.response.data)
-      error.value = err.response.data.error || '다운로드 중 오류가 발생했습니다'
-    } else if (err.request) {
-      error.value = '서버에 연결할 수 없습니다'
-    } else {
-      error.value = err.message
-    }
+    error.value = '다운로드 중 오류가 발생했습니다'
   } finally {
-    loading.value = false
+    downloading.value = false
   }
 }
 </script>
@@ -111,6 +135,24 @@ h2 {
   display: flex;
   gap: 1rem;
   margin-bottom: 1rem;
+}
+
+.video-info {
+  margin-top: 2rem;
+  text-align: center;
+}
+
+.thumbnail {
+  max-width: 320px;
+  margin: 1rem auto;
+  border-radius: 8px;
+}
+
+.format-selector {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  margin-top: 1rem;
 }
 
 .error-message {
