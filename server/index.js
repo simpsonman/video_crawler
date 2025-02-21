@@ -188,6 +188,76 @@ app.post('/api/download/youtube', async (req, res) => {
   }
 })
 
+// 오디오 다운로드 엔드포인트 추가
+app.post('/api/download/youtube/audio', async (req, res) => {
+  try {
+    const { url } = req.body
+    if (!url) {
+      return res.status(400).json({ error: 'URL이 필요합니다' })
+    }
+
+    const info = await ytdl.getInfo(url)
+    const audioFormat = ytdl.chooseFormat(info.formats, {
+      quality: 'highestaudio',
+      filter: 'audioonly',
+    })
+
+    const safeFilename = sanitizeFilename(info.videoDetails.title)
+    const tempAudioPath = path.join(downloadDir, `${safeFilename}_audio.mp3`)
+    const outputPath = path.join(downloadDir, `${safeFilename}_final.mp3`)
+
+    try {
+      // 오디오 다운로드
+      await new Promise((resolve, reject) => {
+        const audio = ytdl(url, { format: audioFormat })
+        audio.pipe(fs.createWriteStream(tempAudioPath)).on('finish', resolve).on('error', reject)
+      })
+
+      // FFmpeg를 사용하여 MP3로 변환
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(tempAudioPath)
+          .outputOptions([
+            '-c:a libmp3lame', // MP3 인코더 사용
+            '-q:a 0', // 최고 품질
+          ])
+          .output(outputPath)
+          .on('end', resolve)
+          .on('error', (err) => {
+            console.error('FFmpeg Error:', err)
+            reject(err)
+          })
+          .run()
+      })
+
+      // 결과 파일 전송
+      res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp3`)
+      res.setHeader('Content-Type', 'audio/mp3')
+
+      const stream = fs.createReadStream(outputPath)
+      stream.pipe(res)
+
+      // 스트림이 완료되면 임시 파일들 삭제
+      stream.on('end', () => {
+        fs.unlink(tempAudioPath, () => {})
+        fs.unlink(outputPath, () => {})
+      })
+    } catch (err) {
+      console.error('Processing Error:', err)
+      // 에러 발생 시 임시 파일 정리
+      fs.unlink(tempAudioPath, () => {})
+      fs.unlink(outputPath, () => {})
+      throw err
+    }
+  } catch (error) {
+    console.error('Download Error:', error)
+    res.status(500).json({
+      error: '오디오 다운로드 중 오류가 발생했습니다',
+      details: error.message,
+    })
+  }
+})
+
 const PORT = process.env.PORT || 5000
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)

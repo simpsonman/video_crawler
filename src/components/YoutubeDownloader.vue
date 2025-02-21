@@ -25,19 +25,34 @@
       <h3>{{ videoInfo.title }}</h3>
       <img :src="videoInfo.thumbnail" alt="썸네일" class="thumbnail" />
 
-      <div class="format-selector">
-        <el-select v-model="selectedFormat" placeholder="해상도 선택" size="large">
-          <el-option
-            v-for="format in videoInfo.formats"
-            :key="format.itag"
-            :label="`${format.quality} (${format.fps}fps)${!format.hasAudio ? ' - 비디오만' : ''}`"
-            :value="format.itag"
-          />
-        </el-select>
+      <div class="download-options">
+        <!-- 비디오 다운로드 옵션 -->
+        <div class="format-selector">
+          <el-select v-model="selectedFormat" placeholder="해상도 선택" size="large">
+            <el-option
+              v-for="format in videoInfo.formats"
+              :key="format.itag"
+              :label="`${format.quality} (${format.fps}fps)`"
+              :value="format.itag"
+            />
+          </el-select>
 
-        <el-button type="success" @click="handleDownload" :loading="downloading" size="large">
-          다운로드
-        </el-button>
+          <el-button type="success" @click="handleDownload" :loading="downloading" size="large">
+            비디오 다운로드
+          </el-button>
+        </div>
+
+        <!-- 오디오 다운로드 버튼 -->
+        <div class="audio-download">
+          <el-button
+            type="primary"
+            @click="handleAudioDownload"
+            :loading="downloadingAudio"
+            size="large"
+          >
+            오디오만 다운로드 (MP3)
+          </el-button>
+        </div>
       </div>
     </div>
 
@@ -55,6 +70,7 @@ import axios from 'axios'
 const url = ref('')
 const loading = ref(false)
 const downloading = ref(false)
+const downloadingAudio = ref(false)
 const error = ref('')
 const videoInfo = ref(null)
 const selectedFormat = ref(null)
@@ -117,6 +133,40 @@ const handleDownload = async () => {
     downloading.value = false
   }
 }
+
+// 오디오 다운로드 핸들러
+const handleAudioDownload = async () => {
+  if (!url.value) {
+    error.value = 'URL을 입력해주세요'
+    return
+  }
+
+  downloadingAudio.value = true
+  error.value = ''
+
+  try {
+    const response = await axios.post(
+      '/api/download/youtube/audio',
+      { url: url.value },
+      { responseType: 'blob' },
+    )
+
+    const blob = new Blob([response.data], { type: 'audio/mp3' })
+    const downloadUrl = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = downloadUrl
+    link.download = `${videoInfo.value.title}.mp3`
+    document.body.appendChild(link)
+    link.click()
+    window.URL.revokeObjectURL(downloadUrl)
+    document.body.removeChild(link)
+  } catch (err) {
+    console.error('Audio download error:', err)
+    error.value = '오디오 다운로드 중 오류가 발생했습니다'
+  } finally {
+    downloadingAudio.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -148,11 +198,25 @@ h2 {
   border-radius: 8px;
 }
 
+.download-options {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+
 .format-selector {
   display: flex;
   gap: 1rem;
   justify-content: center;
-  margin-top: 1rem;
+  width: 100%;
+}
+
+.audio-download {
+  width: 100%;
+  display: flex;
+  justify-content: center;
 }
 
 .error-message {
