@@ -5,7 +5,7 @@
         <youtube-downloader />
       </el-tab-pane>
       <el-tab-pane label="Instagram" name="instagram">
-        <div class="coming-soon">Instagram 다운로더 (준비중)</div>
+        <instagram-downloader />
       </el-tab-pane>
       <el-tab-pane label="X (Twitter)" name="twitter">
         <div class="coming-soon">X 다운로더 (준비중)</div>
@@ -17,6 +17,7 @@
 <script setup>
 import { ref } from 'vue'
 import YoutubeDownloader from './YoutubeDownloader.vue'
+import InstagramDownloader from './InstagramDownloader.vue'
 
 const activeTab = ref('youtube')
 </script>
