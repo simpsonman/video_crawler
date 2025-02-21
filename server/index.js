@@ -3,6 +3,7 @@ const ytdl = require('@distube/ytdl-core')
 const cors = require('cors')
 const path = require('path')
 const fs = require('fs')
+const ffmpeg = require('fluent-ffmpeg')
 
 const app = express()
 
@@ -43,16 +44,48 @@ app.post('/api/youtube/info', async (req, res) => {
     }
 
     const info = await ytdl.getInfo(url)
-    const formats = info.formats
-      .filter((format) => format.hasVideo && format.hasAudio)
-      .map((format) => ({
-        itag: format.itag,
-        quality: format.qualityLabel,
-        container: format.container,
-        size: format.contentLength,
-        fps: format.fps,
-      }))
-      .sort((a, b) => parseInt(b.quality) - parseInt(a.quality))
+
+    // 최고 품질의 오디오 포맷 찾기
+    const bestAudioFormat = ytdl.chooseFormat(info.formats, {
+      quality: 'highestaudio',
+      filter: 'audioonly',
+    })
+
+    // 비디오 포맷 필터링 및 정리
+    const uniqueFormats = new Map()
+    info.formats
+      .filter((format) => format.hasVideo && format.contentLength) // 비디오가 있는 포맷만 선택
+      .forEach((format) => {
+        const key = `${format.qualityLabel}_${format.fps}`
+        const current = uniqueFormats.get(key)
+
+        // 오디오가 있는 포맷 우선, 없으면 나중에 합성
+        const shouldUpdate = !current || format.bitrate > current.bitrate
+
+        if (shouldUpdate) {
+          uniqueFormats.set(key, {
+            itag: format.itag,
+            quality: format.qualityLabel,
+            fps: format.fps,
+            hasAudio: format.hasAudio,
+            bitrate: format.bitrate,
+            videoFormat: format,
+            audioFormat: format.hasAudio ? null : bestAudioFormat, // 오디오가 없으면 최고 품질 오디오 포맷 저장
+          })
+        }
+      })
+
+    // Map을 배열로 변환하고 정렬
+    const formats = Array.from(uniqueFormats.values())
+      .sort((a, b) => {
+        // 해상도로 정렬
+        const resA = parseInt(a.quality?.replace('p', '') || 0)
+        const resB = parseInt(b.quality?.replace('p', '') || 0)
+        if (resA !== resB) return resB - resA
+        // 해상도가 같으면 FPS로 정렬
+        return b.fps - a.fps
+      })
+      .map(({ videoFormat, audioFormat, ...format }) => format) // 클라이언트에 필요한 정보만 전송
 
     res.json({
       title: info.videoDetails.title,
@@ -68,7 +101,7 @@ app.post('/api/youtube/info', async (req, res) => {
 // 다운로드 엔드포인트 수정
 app.post('/api/download/youtube', async (req, res) => {
   try {
-    const { url, itag } = req.body // itag 추가
+    const { url, itag } = req.body
     console.log('Received URL:', url, 'itag:', itag)
 
     if (!url) {
@@ -76,15 +109,76 @@ app.post('/api/download/youtube', async (req, res) => {
     }
 
     const info = await ytdl.getInfo(url)
-    const format = itag
-      ? info.formats.find((f) => f.itag === itag)
-      : ytdl.chooseFormat(info.formats, { quality: 'highest', filter: 'videoandaudio' })
-
+    const videoFormat = info.formats.find((f) => f.itag === itag)
     const safeFilename = sanitizeFilename(info.videoDetails.title)
-    res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp4`)
-    res.setHeader('Content-Type', 'video/mp4')
 
-    ytdl(url, { format }).pipe(res)
+    // 항상 최고 품질의 오디오를 가져옴
+    const audioFormat = ytdl.chooseFormat(info.formats, {
+      quality: 'highestaudio',
+      filter: 'audioonly',
+    })
+
+    // 임시 파일 경로 설정
+    const tempVideoPath = path.join(downloadDir, `${safeFilename}_video.mp4`)
+    const tempAudioPath = path.join(downloadDir, `${safeFilename}_audio.mp3`)
+    const outputPath = path.join(downloadDir, `${safeFilename}_final.mp4`)
+
+    try {
+      // 비디오 다운로드
+      await new Promise((resolve, reject) => {
+        const video = ytdl(url, { format: videoFormat })
+        video.pipe(fs.createWriteStream(tempVideoPath)).on('finish', resolve).on('error', reject)
+      })
+
+      // 오디오 다운로드
+      await new Promise((resolve, reject) => {
+        const audio = ytdl(url, { format: audioFormat })
+        audio.pipe(fs.createWriteStream(tempAudioPath)).on('finish', resolve).on('error', reject)
+      })
+
+      // FFmpeg를 사용하여 비디오와 오디오 합치기
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(tempVideoPath)
+          .input(tempAudioPath)
+          .outputOptions([
+            '-c:v copy',
+            '-c:a aac',
+            '-strict experimental',
+            '-map 0:v:0',
+            '-map 1:a:0',
+            '-shortest',
+          ])
+          .output(outputPath)
+          .on('end', resolve)
+          .on('error', (err) => {
+            console.error('FFmpeg Error:', err)
+            reject(err)
+          })
+          .run()
+      })
+
+      // 결과 파일 전송
+      res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp4`)
+      res.setHeader('Content-Type', 'video/mp4')
+
+      const stream = fs.createReadStream(outputPath)
+      stream.pipe(res)
+
+      // 스트림이 완료되면 임시 파일들 삭제
+      stream.on('end', () => {
+        fs.unlink(tempVideoPath, () => {})
+        fs.unlink(tempAudioPath, () => {})
+        fs.unlink(outputPath, () => {})
+      })
+    } catch (err) {
+      console.error('Processing Error:', err)
+      // 에러 발생 시 임시 파일 정리
+      fs.unlink(tempVideoPath, () => {})
+      fs.unlink(tempAudioPath, () => {})
+      fs.unlink(outputPath, () => {})
+      throw err
+    }
   } catch (error) {
     console.error('Download Error:', error)
     res.status(500).json({

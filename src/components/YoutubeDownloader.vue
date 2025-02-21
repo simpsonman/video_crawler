@@ -30,7 +30,7 @@
           <el-option
             v-for="format in videoInfo.formats"
             :key="format.itag"
-            :label="`${format.quality} (${format.fps}fps)`"
+            :label="`${format.quality} (${format.fps}fps)${!format.hasAudio ? ' - 비디오만' : ''}`"
             :value="format.itag"
           />
         </el-select>
