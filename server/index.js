@@ -567,16 +567,20 @@ async function getTwitterVideoUrl(url) {
       '--disable-setuid-sandbox',
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',
+      '--autoplay-policy=no-user-gesture-required',
+      '--start-maximized',
     ],
   })
 
   try {
     const page = await browser.newPage()
+
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     )
 
     let videoUrls = []
+    let audioUrl = null
     let thumbnailUrl = null
 
     await page.setRequestInterception(true)
@@ -589,9 +593,9 @@ async function getTwitterVideoUrl(url) {
       const url = response.url()
       const contentType = response.headers()['content-type'] || ''
 
-      // m3u8 URL 찾기
+      // 비디오 스트림 URL 찾기 (m3u8)
       if (url.includes('video.twimg.com') && url.includes('.m3u8') && !url.includes('thumb')) {
-        console.log('Found M3U8 URL:', url)
+        console.log('Found Video M3U8 URL:', url)
         let quality = '360p'
         if (url.includes('720x')) quality = '720p'
         else if (url.includes('480x')) quality = '480p'
@@ -603,13 +607,66 @@ async function getTwitterVideoUrl(url) {
         })
       }
 
-      // 썸네일 URL 찾기
-      if (contentType.includes('image') && url.includes('video_thumb')) {
-        thumbnailUrl = url
+      // 오디오 URL 찾기 (m4s 포함)
+      if (
+        url.includes('video.twimg.com') &&
+        (url.includes('/aud/') || url.includes('audio')) &&
+        !url.includes('thumb') &&
+        (url.includes('.m4s') || url.includes('.mp4'))
+      ) {
+        console.log('Found Audio URL:', url)
+        // 가장 높은 품질의 오디오 선택 (128kbps)
+        if (!audioUrl || url.includes('128000')) {
+          audioUrl = url
+        }
       }
     })
 
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 })
+    await page.goto(url, {
+      waitUntil: 'networkidle0',
+      timeout: 30000,
+    })
+
+    // 비디오 플레이어가 로드될 때까지 대기
+    await page.waitForSelector('video', { timeout: 10000 })
+
+    // 비디오 플레이어 초기화 대기
+    await page.waitForFunction(
+      () => {
+        const video = document.querySelector('video')
+        return video && video.readyState >= 2
+      },
+      { timeout: 10000 },
+    )
+
+    // 오디오 활성화 및 재생
+    await page.evaluate(() => {
+      const video = document.querySelector('video')
+      if (video) {
+        // 오디오 설정
+        video.muted = false
+        video.volume = 1
+
+        // 이벤트 리스너 추가
+        video.addEventListener('volumechange', () => {
+          if (video.muted) {
+            video.muted = false
+            video.volume = 1
+          }
+        })
+
+        // 재생 시도
+        const playPromise = video.play()
+        if (playPromise !== undefined) {
+          playPromise.catch(() => {
+            // 자동 재생이 실패해도 계속 진행
+            console.log('Autoplay failed, but continuing...')
+          })
+        }
+      }
+    })
+
+    // 추가 대기 시간
     await new Promise((resolve) => setTimeout(resolve, 5000))
 
     await browser.close()
@@ -626,6 +683,7 @@ async function getTwitterVideoUrl(url) {
 
     return {
       formats: videoUrls,
+      audioUrl: audioUrl,
       thumbnail: thumbnailUrl,
     }
   } catch (error) {
@@ -657,46 +715,93 @@ app.post('/api/twitter/info', async (req, res) => {
 // Twitter 비디오 다운로드
 app.post('/api/download/twitter', async (req, res) => {
   try {
-    const { url, videoUrl } = req.body
-    if (!url || !videoUrl) {
+    const { url } = req.body
+    if (!url) {
       return res.status(400).json({ error: 'URL이 필요합니다' })
     }
 
-    const tempPath = path.join(downloadDir, `twitter_video_${Date.now()}.mp4`)
+    const videoInfo = await getTwitterVideoUrl(url)
+    const videoUrl = videoInfo.formats[0].url
+
+    const tempVideoPath = path.join(downloadDir, `twitter_video_${Date.now()}.mp4`)
+    const tempAudioPath = path.join(downloadDir, `twitter_audio_${Date.now()}.mp3`)
+    const outputPath = path.join(downloadDir, `twitter_final_${Date.now()}.mp4`)
 
     try {
-      // ffmpeg를 사용하여 m3u8을 mp4로 변환
+      // 비디오 다운로드
       await new Promise((resolve, reject) => {
         ffmpeg()
           .input(videoUrl)
+          .inputOptions([
+            '-protocol_whitelist',
+            'file,http,https,tcp,tls,crypto,pipe,hls',
+            '-allowed_extensions',
+            'ALL',
+          ])
+          .outputOptions(['-c', 'copy'])
+          .output(tempVideoPath)
+          .on('end', resolve)
+          .on('error', reject)
+          .run()
+      })
+
+      // 비디오에서 오디오 추출
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(videoUrl)
+          .inputOptions([
+            '-protocol_whitelist',
+            'file,http,https,tcp,tls,crypto,pipe,hls',
+            '-allowed_extensions',
+            'ALL',
+          ])
+          .outputOptions(['-vn', '-acodec', 'libmp3lame', '-q:a', '2'])
+          .output(tempAudioPath)
+          .on('end', resolve)
+          .on('error', reject)
+          .run()
+      })
+
+      // 비디오와 오디오 합치기
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(tempVideoPath)
+          .input(tempAudioPath)
           .outputOptions([
             '-c:v',
-            'copy', // 비디오 코덱 복사
+            'copy',
             '-c:a',
-            'aac', // 오디오 코덱 AAC
-            '-bsf:a',
-            'aac_adtstoasc', // AAC 비트스트림 필터
+            'aac',
+            '-strict',
+            'experimental',
+            '-map',
+            '0:v:0',
+            '-map',
+            '1:a:0',
           ])
-          .output(tempPath)
-          .on('end', resolve)
-          .on('error', (err) => {
-            console.error('FFmpeg error:', err)
-            reject(err)
+          .on('start', (commandLine) => {
+            console.log('FFmpeg command:', commandLine)
           })
-          .run()
+          .on('end', resolve)
+          .on('error', reject)
+          .save(outputPath)
       })
 
       res.setHeader('Content-Type', 'video/mp4')
       res.setHeader('Content-Disposition', 'attachment; filename=twitter_video.mp4')
 
-      const readStream = fs.createReadStream(tempPath)
+      const readStream = fs.createReadStream(outputPath)
       readStream.pipe(res)
 
       readStream.on('end', () => {
-        fs.unlink(tempPath, () => {})
+        fs.unlink(tempVideoPath, () => {})
+        fs.unlink(tempAudioPath, () => {})
+        fs.unlink(outputPath, () => {})
       })
     } catch (err) {
-      fs.unlink(tempPath, () => {})
+      fs.unlink(tempVideoPath, () => {})
+      fs.unlink(tempAudioPath, () => {})
+      if (fs.existsSync(outputPath)) fs.unlink(outputPath, () => {})
       throw err
     }
   } catch (error) {
