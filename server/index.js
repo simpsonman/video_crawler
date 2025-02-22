@@ -558,6 +558,213 @@ app.post('/api/download/instagram/audio', async (req, res) => {
   }
 })
 
+// Twitter 비디오 URL 추출 함수
+async function getTwitterVideoUrl(url) {
+  const browser = await puppeteer.launch({
+    headless: false,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process',
+    ],
+  })
+
+  try {
+    const page = await browser.newPage()
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    )
+
+    let videoUrls = []
+    let thumbnailUrl = null
+
+    await page.setRequestInterception(true)
+
+    page.on('request', (request) => {
+      request.continue()
+    })
+
+    page.on('response', async (response) => {
+      const url = response.url()
+      const contentType = response.headers()['content-type'] || ''
+
+      // m3u8 URL 찾기
+      if (url.includes('video.twimg.com') && url.includes('.m3u8') && !url.includes('thumb')) {
+        console.log('Found M3U8 URL:', url)
+        let quality = '360p'
+        if (url.includes('720x')) quality = '720p'
+        else if (url.includes('480x')) quality = '480p'
+
+        videoUrls.push({
+          url: url,
+          quality: quality,
+          type: 'm3u8',
+        })
+      }
+
+      // 썸네일 URL 찾기
+      if (contentType.includes('image') && url.includes('video_thumb')) {
+        thumbnailUrl = url
+      }
+    })
+
+    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 })
+    await new Promise((resolve) => setTimeout(resolve, 5000))
+
+    await browser.close()
+
+    if (videoUrls.length === 0) {
+      throw new Error('비디오 URL을 찾을 수 없습니다')
+    }
+
+    // 품질별로 정렬
+    videoUrls.sort((a, b) => {
+      const getQualityNumber = (q) => parseInt(q.replace('p', ''))
+      return getQualityNumber(b.quality) - getQualityNumber(a.quality)
+    })
+
+    return {
+      formats: videoUrls,
+      thumbnail: thumbnailUrl,
+    }
+  } catch (error) {
+    await browser.close()
+    throw error
+  }
+}
+
+// Twitter 정보 가져오기
+app.post('/api/twitter/info', async (req, res) => {
+  try {
+    const { url } = req.body
+    if (!url) {
+      return res.status(400).json({ error: 'URL이 필요합니다' })
+    }
+
+    if (!url.includes('twitter.com') && !url.includes('x.com')) {
+      return res.status(400).json({ error: '올바른 Twitter/X URL이 아닙니다' })
+    }
+
+    const videoInfo = await getTwitterVideoUrl(url)
+    res.json(videoInfo)
+  } catch (error) {
+    console.error('Twitter Error:', error)
+    res.status(500).json({ error: 'Twitter 정보를 가져오는데 실패했습니다' })
+  }
+})
+
+// Twitter 비디오 다운로드
+app.post('/api/download/twitter', async (req, res) => {
+  try {
+    const { url, videoUrl } = req.body
+    if (!url || !videoUrl) {
+      return res.status(400).json({ error: 'URL이 필요합니다' })
+    }
+
+    const tempPath = path.join(downloadDir, `twitter_video_${Date.now()}.mp4`)
+
+    try {
+      // ffmpeg를 사용하여 m3u8을 mp4로 변환
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(videoUrl)
+          .outputOptions([
+            '-c:v',
+            'copy', // 비디오 코덱 복사
+            '-c:a',
+            'aac', // 오디오 코덱 AAC
+            '-bsf:a',
+            'aac_adtstoasc', // AAC 비트스트림 필터
+          ])
+          .output(tempPath)
+          .on('end', resolve)
+          .on('error', (err) => {
+            console.error('FFmpeg error:', err)
+            reject(err)
+          })
+          .run()
+      })
+
+      res.setHeader('Content-Type', 'video/mp4')
+      res.setHeader('Content-Disposition', 'attachment; filename=twitter_video.mp4')
+
+      const readStream = fs.createReadStream(tempPath)
+      readStream.pipe(res)
+
+      readStream.on('end', () => {
+        fs.unlink(tempPath, () => {})
+      })
+    } catch (err) {
+      fs.unlink(tempPath, () => {})
+      throw err
+    }
+  } catch (error) {
+    console.error('Download Error:', error)
+    res.status(500).json({ error: '다운로드 중 오류가 발생했습니다' })
+  }
+})
+
+// Twitter 오디오 다운로드
+app.post('/api/download/twitter/audio', async (req, res) => {
+  try {
+    const { url } = req.body
+    if (!url) {
+      return res.status(400).json({ error: 'URL이 필요합니다' })
+    }
+
+    const videoInfo = await getTwitterVideoUrl(url)
+    const videoUrl = videoInfo.formats[0].url
+
+    const tempVideoPath = path.join(downloadDir, `twitter_video_${Date.now()}.mp4`)
+    const outputPath = path.join(downloadDir, `twitter_audio_${Date.now()}.mp3`)
+
+    try {
+      const videoResponse = await axios({
+        method: 'get',
+        url: videoUrl,
+        responseType: 'arraybuffer',
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+          Referer: 'https://twitter.com/',
+        },
+      })
+
+      await fs.promises.writeFile(tempVideoPath, Buffer.from(videoResponse.data))
+
+      // FFmpeg를 사용하여 오디오 추출
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(tempVideoPath)
+          .outputOptions(['-vn', '-acodec', 'libmp3lame', '-q:a', '0'])
+          .output(outputPath)
+          .on('end', resolve)
+          .on('error', reject)
+          .run()
+      })
+
+      res.setHeader('Content-Type', 'audio/mp3')
+      res.setHeader('Content-Disposition', 'attachment; filename=twitter_audio.mp3')
+
+      const readStream = fs.createReadStream(outputPath)
+      readStream.pipe(res)
+
+      readStream.on('end', () => {
+        fs.unlink(tempVideoPath, () => {})
+        fs.unlink(outputPath, () => {})
+      })
+    } catch (err) {
+      fs.unlink(tempVideoPath, () => {})
+      fs.unlink(outputPath, () => {})
+      throw err
+    }
+  } catch (error) {
+    console.error('Download Error:', error)
+    res.status(500).json({ error: '오디오 추출 중 오류가 발생했습니다' })
+  }
+})
+
 const PORT = process.env.PORT || 5000
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
