@@ -1,0 +1,28 @@
+version: '3'
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: simpsonlee86/video_crawler_frontend:latest
+    container_name: vid_craw_front
+    restart: always
+    ports:
+      - '5173:5173'
+    networks:
+      - my_network
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: simpsonlee86/video_crawler_backend:latest
+    container_name: vid_craw_back
+    restart: always
+    ports:
+      - '5000:5000'
+    networks:
+      - my_network
+
+networks:
+  my_network:
