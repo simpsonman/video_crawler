@@ -282,6 +282,8 @@ async function getInstagramVideoUrl(url) {
       '--disable-setuid-sandbox',
       '--disable-web-security',
       '--disable-features=IsolateOrigins,site-per-process',
+      '--autoplay-policy=no-user-gesture-required',
+      '--start-maximized',
     ],
   })
 
@@ -297,7 +299,7 @@ async function getInstagramVideoUrl(url) {
     )
 
     // 네트워크 요청 모니터링
-    let videoUrl = null
+    let videoUrls = []
     let thumbnailUrl = null
 
     // Request Interception 활성화
@@ -312,20 +314,55 @@ async function getInstagramVideoUrl(url) {
       request.continue()
     })
 
+    // 네트워크 응답 모니터링 - 메인 포스트 비디오 URL 찾기
     page.on('response', async (response) => {
       try {
         const url = response.url()
         const contentType = response.headers()['content-type'] || ''
 
-        if (contentType.includes('video') || url.includes('video') || url.includes('.mp4')) {
+        // 비디오 URL 찾기 (더 많은 패턴 추가)
+        if (
+          contentType.includes('video') ||
+          url.includes('video') ||
+          url.includes('.mp4') ||
+          url.includes('cdninstagram.com') ||
+          url.includes('fbcdn.net')
+        ) {
           console.log('Potential video URL found:', url)
           console.log('Content-Type:', contentType)
           console.log('Status:', response.status())
 
           if (response.status() === 200) {
-            videoUrl = url
-            console.log('Valid video URL found:', videoUrl)
+            // 품질 정보 추가
+            let quality = '일반 화질'
+            if (url.includes('high') || url.includes('1080')) {
+              quality = '고화질 (1080p)'
+            } else if (url.includes('720')) {
+              quality = '중간 화질 (720p)'
+            }
+
+            videoUrls.push({
+              url: url,
+              quality: quality,
+              type: 'mp4',
+              source: 'network',
+            })
+
+            console.log('Valid video URL found:', url)
           }
+        }
+
+        // 썸네일 URL 찾기
+        if (
+          (contentType.includes('image') ||
+            url.includes('.jpg') ||
+            url.includes('.jpeg') ||
+            url.includes('.png')) &&
+          !thumbnailUrl &&
+          response.status() === 200
+        ) {
+          thumbnailUrl = url
+          console.log('Thumbnail URL found:', thumbnailUrl)
         }
       } catch (error) {
         console.error('Response processing error:', error)
@@ -333,55 +370,332 @@ async function getInstagramVideoUrl(url) {
     })
 
     console.log('Navigating to Instagram page...')
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 })
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 60000 })
     console.log('Page loaded')
 
-    await sleep(5000)
+    // 로그인 팝업 닫기 시도
+    try {
+      const closeButton = await page.$('button.x1i10hfl[aria-label="Close"]')
+      if (closeButton) {
+        await closeButton.click()
+        console.log('Closed login popup')
+        await sleep(1000)
+      }
+    } catch (err) {
+      console.log('No login popup found or failed to close it')
+    }
 
-    // video 태그 찾기
-    const hasVideo = await page.evaluate(() => {
-      const videos = document.querySelectorAll('video')
-      console.log('Found video elements:', videos.length)
-      return videos.length > 0
+    await sleep(3000)
+
+    // 메인 포스트 영역 찾기 (여러 선택자 시도)
+    const mainPostSelectors = [
+      'article[role="presentation"]',
+      'div[role="dialog"] article',
+      'div._aatb._aate',
+      'div._ab8w._ab94._ab99._ab9f._ab9m._ab9p._abcm',
+    ]
+
+    let mainPostElement = null
+    for (const selector of mainPostSelectors) {
+      const element = await page.$(selector)
+      if (element) {
+        mainPostElement = element
+        console.log(`Found main post with selector: ${selector}`)
+        break
+      }
+    }
+
+    if (!mainPostElement) {
+      console.log('Could not find main post element with any selector')
+    }
+
+    // 비디오 재생 버튼 클릭 시도 (여러 선택자 시도)
+    const playButtonSelectors = [
+      'div[role="button"][tabindex="0"] svg',
+      'div[aria-label="재생"]',
+      'div[aria-label="Play"]',
+      'div._aatk button',
+    ]
+
+    for (const selector of playButtonSelectors) {
+      try {
+        const playButton = await page.$(selector)
+        if (playButton) {
+          await playButton.click()
+          console.log(`Clicked play button with selector: ${selector}`)
+          await sleep(2000)
+          break
+        }
+      } catch (err) {
+        console.log(`Failed to click play button with selector: ${selector}`)
+      }
+    }
+
+    // 메인 포스트 내의 비디오 URL 직접 추출 시도
+    console.log('Trying to extract video URL directly from main post...')
+    const mainPostVideoUrls = await page.evaluate(() => {
+      // 메인 포스트 찾기 (여러 선택자 시도)
+      const mainPostSelectors = [
+        'article[role="presentation"]',
+        'div[role="dialog"] article',
+        'div._aatb._aate',
+        'div._ab8w._ab94._ab99._ab9f._ab9m._ab9p._abcm',
+      ]
+
+      let mainPost = null
+      for (const selector of mainPostSelectors) {
+        const element = document.querySelector(selector)
+        if (element) {
+          mainPost = element
+          console.log(`Found main post with selector: ${selector}`)
+          break
+        }
+      }
+
+      if (!mainPost) {
+        console.log('Could not find main post element')
+        return []
+      }
+
+      // 메인 포스트 내의 모든 비디오 요소 찾기
+      const videos = Array.from(mainPost.querySelectorAll('video'))
+      console.log(`Found ${videos.length} video elements in main post`)
+
+      const results = []
+
+      // 비디오 요소에서 URL 추출
+      for (const video of videos) {
+        console.log('Video element properties:', {
+          src: video.src,
+          currentSrc: video.currentSrc,
+          poster: video.poster,
+        })
+
+        if (video.src && !video.src.startsWith('blob:')) {
+          results.push({
+            url: video.src,
+            quality: '직접 추출 비디오',
+            type: 'mp4',
+            source: 'direct',
+          })
+        }
+
+        if (
+          video.currentSrc &&
+          !video.currentSrc.startsWith('blob:') &&
+          video.currentSrc !== video.src
+        ) {
+          results.push({
+            url: video.currentSrc,
+            quality: '직접 추출 비디오 (currentSrc)',
+            type: 'mp4',
+            source: 'direct',
+          })
+        }
+      }
+
+      // source 태그 확인
+      const sources = mainPost.querySelectorAll('source')
+      for (const source of sources) {
+        if (source.src && !source.src.startsWith('blob:')) {
+          results.push({
+            url: source.src,
+            quality: '직접 추출 비디오 (source)',
+            type: 'mp4',
+            source: 'direct',
+          })
+        }
+      }
+
+      return results
     })
 
-    console.log('Video elements found:', hasVideo)
+    // 직접 추출한 URL 추가
+    if (mainPostVideoUrls.length > 0) {
+      console.log('Found video URLs directly from main post:', mainPostVideoUrls)
+      videoUrls.push(...mainPostVideoUrls)
+    }
 
-    if (!videoUrl) {
-      console.log('Trying to extract video URL from page...')
-      videoUrl = await page.evaluate(() => {
-        const videos = Array.from(document.querySelectorAll('video'))
-        console.log('Videos found:', videos.length)
+    // 페이지 소스에서 비디오 URL 추출 시도
+    console.log('Trying to extract video URL from page source...')
+    const pageSource = await page.content()
 
-        for (const video of videos) {
-          console.log('Video element:', {
-            src: video.src,
-            currentSrc: video.currentSrc,
-            poster: video.poster,
+    // 정규식으로 비디오 URL 추출 시도 (인스타그램 비디오 패턴에 맞게 조정)
+    const videoRegexPatterns = [
+      /https:\/\/[^"']*\.mp4[^"']*/g,
+      /https:\/\/scontent[^"']*\.cdninstagram\.com[^"']*video[^"']*/g,
+      /https:\/\/instagram\.[\w]+\.fbcdn\.net[^"']*video[^"']*/g,
+    ]
+
+    for (const pattern of videoRegexPatterns) {
+      const matches = pageSource.match(pattern)
+      if (matches && matches.length > 0) {
+        console.log(`Found ${matches.length} video URLs with pattern:`, pattern)
+
+        // 중복 제거
+        const uniqueUrls = [...new Set(matches)]
+
+        uniqueUrls.forEach((url) => {
+          videoUrls.push({
+            url: url,
+            quality: '정규식 추출 비디오',
+            type: 'mp4',
+            source: 'regex',
           })
+        })
+      }
+    }
 
-          if (video.src && !video.src.startsWith('blob:')) return video.src
-          if (video.currentSrc && !video.currentSrc.startsWith('blob:')) return video.currentSrc
+    // JSON 데이터에서 비디오 URL 추출 시도
+    console.log('Trying to extract video URL from JSON data...')
+    const jsonVideoUrls = await page.evaluate(() => {
+      const results = []
+
+      // 페이지 내의 모든 script 태그 검사
+      const scripts = document.querySelectorAll('script[type="application/json"]')
+      for (const script of scripts) {
+        try {
+          const jsonData = JSON.parse(script.textContent)
+
+          // JSON 데이터에서 비디오 URL 찾기 (재귀 함수)
+          function findVideoUrls(obj, path = '') {
+            if (!obj || typeof obj !== 'object') return
+
+            // 비디오 URL을 포함할 가능성이 있는 키 이름
+            const videoKeys = ['video_url', 'video_src', 'src', 'url', 'video_versions']
+
+            for (const key in obj) {
+              const newPath = path ? `${path}.${key}` : key
+
+              // 값이 URL 문자열이고 비디오 관련 키인 경우
+              if (
+                typeof obj[key] === 'string' &&
+                videoKeys.some((vk) => key.toLowerCase().includes(vk.toLowerCase())) &&
+                (obj[key].includes('.mp4') || obj[key].includes('video'))
+              ) {
+                console.log(`Found video URL in JSON at path ${newPath}:`, obj[key])
+                results.push({
+                  url: obj[key],
+                  quality: 'JSON 추출 비디오',
+                  type: 'mp4',
+                  source: 'json',
+                  path: newPath,
+                })
+              }
+              // 배열인 경우 각 항목 검사
+              else if (Array.isArray(obj[key])) {
+                obj[key].forEach((item, index) => {
+                  findVideoUrls(item, `${newPath}[${index}]`)
+                })
+              }
+              // 객체인 경우 재귀 호출
+              else if (typeof obj[key] === 'object' && obj[key] !== null) {
+                findVideoUrls(obj[key], newPath)
+              }
+            }
+          }
+
+          findVideoUrls(jsonData)
+        } catch (err) {
+          console.log('Error parsing JSON from script tag:', err)
+        }
+      }
+
+      return results
+    })
+
+    // JSON에서 추출한 URL 추가
+    if (jsonVideoUrls.length > 0) {
+      console.log('Found video URLs from JSON data:', jsonVideoUrls)
+      videoUrls.push(...jsonVideoUrls)
+    }
+
+    // 썸네일 추출 시도
+    if (!thumbnailUrl) {
+      thumbnailUrl = await page.evaluate(() => {
+        // 메인 포스트 찾기 (여러 선택자 시도)
+        const mainPostSelectors = [
+          'article[role="presentation"]',
+          'div[role="dialog"] article',
+          'div._aatb._aate',
+          'div._ab8w._ab94._ab99._ab9f._ab9m._ab9p._abcm',
+        ]
+
+        let mainPost = null
+        for (const selector of mainPostSelectors) {
+          const element = document.querySelector(selector)
+          if (element) {
+            mainPost = element
+            break
+          }
         }
 
-        // source 태그도 확인
-        const sources = document.querySelectorAll('source')
-        for (const source of sources) {
-          if (source.src && !source.src.startsWith('blob:')) return source.src
+        if (mainPost) {
+          // 메인 포스트 내에서 찾기
+          const video = mainPost.querySelector('video')
+          if (video && video.poster) return video.poster
+
+          // 큰 이미지 찾기
+          const images = Array.from(mainPost.querySelectorAll('img'))
+          const mainImage = images.find((img) => img.width > 200 && img.height > 200)
+          if (mainImage) return mainImage.src
         }
 
-        return null
+        // 메인 포스트를 찾지 못했거나 이미지가 없는 경우 전체 페이지에서 찾기
+        const video = document.querySelector('video')
+        if (video && video.poster) return video.poster
+
+        const images = Array.from(document.querySelectorAll('img'))
+        const mainImage = images.find((img) => img.width > 200 && img.height > 200)
+        return mainImage ? mainImage.src : null
       })
+
+      if (thumbnailUrl) {
+        console.log('Found thumbnail URL:', thumbnailUrl)
+      }
     }
 
     await browser.close()
-    console.log('Final video URL:', videoUrl)
+    console.log('Final video URLs count:', videoUrls.length)
 
-    if (!videoUrl) {
+    if (videoUrls.length === 0) {
       throw new Error('비디오 URL을 찾을 수 없습니다')
     }
 
-    return { videoUrl, thumbnailUrl }
+    // 소스 및 품질에 따라 우선순위 부여
+    videoUrls.forEach((format) => {
+      // 소스 기반 우선순위
+      if (format.source === 'direct') format.priority = 10
+      else if (format.source === 'json') format.priority = 8
+      else if (format.source === 'network') format.priority = 5
+      else if (format.source === 'regex') format.priority = 3
+      else format.priority = 1
+
+      // 품질 기반 추가 우선순위
+      if (format.quality.includes('고화질')) format.priority += 2
+      else if (format.quality.includes('중간')) format.priority += 1
+    })
+
+    // 우선순위에 따라 정렬
+    videoUrls.sort((a, b) => b.priority - a.priority)
+
+    // 중복 URL 제거
+    const uniqueUrls = []
+    const seen = new Set()
+
+    for (const format of videoUrls) {
+      if (!seen.has(format.url)) {
+        seen.add(format.url)
+        uniqueUrls.push(format)
+      }
+    }
+
+    console.log('Final unique video URLs:', uniqueUrls)
+
+    return {
+      formats: uniqueUrls,
+      thumbnail: thumbnailUrl,
+    }
   } catch (error) {
     console.error('Error in getInstagramVideoUrl:', error)
     await browser.close()
@@ -402,15 +716,8 @@ app.post('/api/instagram/info', async (req, res) => {
       return res.status(400).json({ error: '올바른 Instagram URL이 아닙니다' })
     }
 
-    const { videoUrl, thumbnailUrl } = await getInstagramVideoUrl(url)
-    if (!videoUrl) {
-      throw new Error('비디오 URL을 찾을 수 없습니다')
-    }
-
-    res.json({
-      url: videoUrl,
-      thumbnail: thumbnailUrl || videoUrl,
-    })
+    const videoInfo = await getInstagramVideoUrl(url)
+    res.json(videoInfo)
   } catch (error) {
     console.error('Instagram Error:', error)
     res.status(500).json({ error: '인스타그램 정보를 가져오는데 실패했습니다' })
@@ -420,7 +727,7 @@ app.post('/api/instagram/info', async (req, res) => {
 // 인스타그램 비디오 다운로드 함수 수정
 app.post('/api/download/instagram/video', async (req, res) => {
   try {
-    const { url } = req.body
+    const { url, videoUrl } = req.body
     if (!url) {
       return res.status(400).json({ error: 'URL이 필요합니다' })
     }
@@ -429,9 +736,11 @@ app.post('/api/download/instagram/video', async (req, res) => {
       return res.status(400).json({ error: '올바른 Instagram URL이 아닙니다' })
     }
 
-    const { videoUrl } = await getInstagramVideoUrl(url)
-    if (!videoUrl) {
-      throw new Error('비디오 URL을 찾을 수 없습니다')
+    // videoUrl이 제공되면 사용, 아니면 직접 가져오기
+    let targetVideoUrl = videoUrl
+    if (!targetVideoUrl) {
+      const videoInfo = await getInstagramVideoUrl(url)
+      targetVideoUrl = videoInfo.formats[0].url
     }
 
     const tempPath = path.join(downloadDir, `instagram_video_${Date.now()}.mp4`)
@@ -440,7 +749,7 @@ app.post('/api/download/instagram/video', async (req, res) => {
       // 먼저 axios로 비디오 다운로드
       const videoResponse = await axios({
         method: 'get',
-        url: videoUrl,
+        url: targetVideoUrl,
         responseType: 'arraybuffer',
         headers: {
           'User-Agent':
@@ -496,7 +805,7 @@ app.post('/api/download/instagram/video', async (req, res) => {
 // 인스타그램 오디오 다운로드
 app.post('/api/download/instagram/audio', async (req, res) => {
   try {
-    const { url } = req.body
+    const { url, videoUrl } = req.body
     if (!url) {
       return res.status(400).json({ error: 'URL이 필요합니다' })
     }
@@ -506,24 +815,35 @@ app.post('/api/download/instagram/audio', async (req, res) => {
       return res.status(400).json({ error: '올바른 Instagram URL이 아닙니다' })
     }
 
-    const { videoUrl } = await getInstagramVideoUrl(url)
-    if (!videoUrl) {
-      throw new Error('비디오 URL을 찾을 수 없습니다')
+    // videoUrl이 제공되면 사용, 아니면 직접 가져오기
+    let targetVideoUrl = videoUrl
+    if (!targetVideoUrl) {
+      const videoInfo = await getInstagramVideoUrl(url)
+      targetVideoUrl = videoInfo.formats[0].url
     }
 
     const safeFilename = 'instagram_audio'
-    const tempVideoPath = path.join(downloadDir, `${safeFilename}_video.mp4`)
-    const outputPath = path.join(downloadDir, `${safeFilename}.mp3`)
+    const tempVideoPath = path.join(downloadDir, `${safeFilename}_video_${Date.now()}.mp4`)
+    const outputPath = path.join(downloadDir, `${safeFilename}_${Date.now()}.mp3`)
 
     try {
       // 비디오 다운로드
-      const videoResponse = await axios.get(videoUrl, { responseType: 'stream' })
-      await new Promise((resolve, reject) => {
-        const writer = fs.createWriteStream(tempVideoPath)
-        videoResponse.data.pipe(writer)
-        writer.on('finish', resolve)
-        writer.on('error', reject)
+      const videoResponse = await axios({
+        method: 'get',
+        url: targetVideoUrl,
+        responseType: 'arraybuffer',
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+          Accept: 'video/mp4,video/*;q=0.9,*/*;q=0.8',
+          Referer: 'https://www.instagram.com/',
+        },
+        maxRedirects: 5,
+        timeout: 30000,
       })
+
+      // 비디오 데이터를 파일로 저장
+      await fs.promises.writeFile(tempVideoPath, Buffer.from(videoResponse.data))
 
       // FFmpeg를 사용하여 오디오 추출
       await new Promise((resolve, reject) => {
@@ -532,19 +852,37 @@ app.post('/api/download/instagram/audio', async (req, res) => {
           .outputOptions(['-vn', '-acodec', 'libmp3lame', '-q:a', '0'])
           .output(outputPath)
           .on('end', resolve)
-          .on('error', reject)
+          .on('error', (err) => {
+            console.error('FFmpeg Error:', err)
+            reject(err)
+          })
           .run()
       })
 
       // 결과 파일 전송
       res.setHeader('Content-Type', 'audio/mp3')
       res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp3`)
-      fs.createReadStream(outputPath).pipe(res)
+
+      const stats = await fs.promises.stat(outputPath)
+      res.setHeader('Content-Length', stats.size)
+
+      const readStream = fs.createReadStream(outputPath)
+      readStream.pipe(res)
 
       // 스트림이 완료되면 임시 파일 삭제
-      res.on('finish', () => {
+      readStream.on('end', () => {
         fs.unlink(tempVideoPath, () => {})
         fs.unlink(outputPath, () => {})
+      })
+
+      // 에러 처리
+      readStream.on('error', (err) => {
+        console.error('Stream error:', err)
+        fs.unlink(tempVideoPath, () => {})
+        fs.unlink(outputPath, () => {})
+        if (!res.headersSent) {
+          res.status(500).json({ error: '파일 전송 중 오류가 발생했습니다' })
+        }
       })
     } catch (err) {
       // 에러 발생 시 임시 파일 정리

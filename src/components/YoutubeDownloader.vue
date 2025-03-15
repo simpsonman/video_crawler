@@ -1,11 +1,11 @@
 <template>
   <div class="youtube-downloader">
-    <h2>YouTube 비디오 다운로더</h2>
+    <h2>YouTube Video Downloader</h2>
 
     <div class="input-container">
       <el-input
         v-model="url"
-        placeholder="YouTube URL을 입력해주세요"
+        placeholder="Enter your YouTube URL"
         :disabled="loading"
         size="large"
         clearable
@@ -16,19 +16,19 @@
       </el-input>
 
       <el-button type="primary" @click="getVideoInfo" :loading="loading" size="large">
-        정보 가져오기
+        Get information
       </el-button>
     </div>
 
     <!-- 비디오 정보 표시 -->
     <div v-if="videoInfo" class="video-info">
       <h3>{{ videoInfo.title }}</h3>
-      <img :src="videoInfo.thumbnail" alt="썸네일" class="thumbnail" />
+      <img :src="videoInfo.thumbnail" alt="Thumbnail" class="thumbnail" />
 
       <div class="download-options">
         <!-- 비디오 다운로드 옵션 -->
         <div class="format-selector">
-          <el-select v-model="selectedFormat" placeholder="해상도 선택" size="large">
+          <el-select v-model="selectedFormat" placeholder="Select a resolution" size="large">
             <el-option
               v-for="format in videoInfo.formats"
               :key="format.itag"
@@ -38,7 +38,7 @@
           </el-select>
 
           <el-button type="success" @click="handleDownload" :loading="downloading" size="large">
-            비디오 다운로드
+            Download the video
           </el-button>
         </div>
 
@@ -50,7 +50,7 @@
             :loading="downloadingAudio"
             size="large"
           >
-            오디오만 다운로드 (MP3)
+            Download the audio
           </el-button>
         </div>
       </div>
@@ -77,7 +77,7 @@ const selectedFormat = ref(null)
 
 const getVideoInfo = async () => {
   if (!url.value) {
-    error.value = 'URL을 입력해주세요'
+    error.value = 'Please enter the URL'
     return
   }
 
@@ -90,7 +90,7 @@ const getVideoInfo = async () => {
     selectedFormat.value = videoInfo.value.formats[0]?.itag // 최고 품질 기본 선택
   } catch (err) {
     console.error('Error:', err)
-    error.value = '비디오 정보를 가져오는데 실패했습니다'
+    error.value = 'Failed to get video information'
   } finally {
     loading.value = false
   }
@@ -98,7 +98,7 @@ const getVideoInfo = async () => {
 
 const handleDownload = async () => {
   if (!selectedFormat.value) {
-    error.value = '해상도를 선택해주세요'
+    error.value = 'Please select a resolution'
     return
   }
 
@@ -128,7 +128,7 @@ const handleDownload = async () => {
     document.body.removeChild(link)
   } catch (err) {
     console.error('Download error:', err)
-    error.value = '다운로드 중 오류가 발생했습니다'
+    error.value = 'An error occurred during download'
   } finally {
     downloading.value = false
   }
@@ -137,7 +137,7 @@ const handleDownload = async () => {
 // 오디오 다운로드 핸들러
 const handleAudioDownload = async () => {
   if (!url.value) {
-    error.value = 'URL을 입력해주세요'
+    error.value = 'Please enter the URL'
     return
   }
 
@@ -162,7 +162,7 @@ const handleAudioDownload = async () => {
     document.body.removeChild(link)
   } catch (err) {
     console.error('Audio download error:', err)
-    error.value = '오디오 다운로드 중 오류가 발생했습니다'
+    error.value = 'An error occurred during audio download'
   } finally {
     downloadingAudio.value = false
   }

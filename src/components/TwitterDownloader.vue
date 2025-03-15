@@ -1,11 +1,11 @@
 <template>
   <div class="twitter-downloader">
-    <h2>X (Twitter) 비디오 다운로더</h2>
+    <h2>X (Twitter) Video Downloader</h2>
 
     <div class="input-container">
       <el-input
         v-model="url"
-        placeholder="X (Twitter) URL을 입력해주세요"
+        placeholder="Enter your X (Twitter) URL"
         :disabled="loading"
         size="large"
         clearable
@@ -16,7 +16,7 @@
       </el-input>
 
       <el-button type="primary" @click="getVideoInfo" :loading="loading" size="large">
-        정보 가져오기
+        Get information
       </el-button>
     </div>
 
@@ -27,7 +27,7 @@
       <div class="download-options">
         <!-- 비디오 다운로드 옵션 -->
         <div class="format-selector">
-          <el-select v-model="selectedFormat" placeholder="해상도 선택" size="large">
+          <el-select v-model="selectedFormat" placeholder="Select a resolution" size="large">
             <el-option
               v-for="format in videoInfo.formats"
               :key="format.quality"
@@ -37,7 +37,7 @@
           </el-select>
 
           <el-button type="success" @click="handleDownload" :loading="downloading" size="large">
-            비디오 다운로드
+            Download the video
           </el-button>
         </div>
 
@@ -76,7 +76,7 @@ const selectedFormat = ref(null)
 
 const getVideoInfo = async () => {
   if (!url.value) {
-    error.value = 'URL을 입력해주세요'
+    error.value = 'Enter your X (Twitter) URL'
     return
   }
 
@@ -89,7 +89,7 @@ const getVideoInfo = async () => {
     selectedFormat.value = videoInfo.value.formats[0]?.url // 최고 품질 기본 선택
   } catch (err) {
     console.error('Error:', err)
-    error.value = '비디오 정보를 가져오는데 실패했습니다'
+    error.value = 'Failed to get video information'
   } finally {
     loading.value = false
   }
@@ -97,7 +97,7 @@ const getVideoInfo = async () => {
 
 const handleDownload = async () => {
   if (!selectedFormat.value) {
-    error.value = '해상도를 선택해주세요'
+    error.value = 'Select a resolution'
     return
   }
 
@@ -127,7 +127,7 @@ const handleDownload = async () => {
     document.body.removeChild(link)
   } catch (err) {
     console.error('Download error:', err)
-    error.value = '다운로드 중 오류가 발생했습니다'
+    error.value = 'An error occurred during download'
   } finally {
     downloading.value = false
   }
@@ -135,7 +135,7 @@ const handleDownload = async () => {
 
 const handleAudioDownload = async () => {
   if (!url.value) {
-    error.value = 'URL을 입력해주세요'
+    error.value = 'Enter your X (Twitter) URL'
     return
   }
 
@@ -160,7 +160,7 @@ const handleAudioDownload = async () => {
     document.body.removeChild(link)
   } catch (err) {
     console.error('Audio download error:', err)
-    error.value = '오디오 다운로드 중 오류가 발생했습니다'
+    error.value = 'An error occurred during audio download'
   } finally {
     downloadingAudio.value = false
   }

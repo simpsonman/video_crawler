@@ -26,20 +26,38 @@
       <img :src="videoInfo.thumbnail" alt="썸네일" class="thumbnail" />
 
       <div class="download-options">
-        <!-- 비디오 다운로드 버튼 -->
-        <el-button type="success" @click="handleVideoDownload" :loading="downloading" size="large">
-          비디오 다운로드
-        </el-button>
+        <!-- 비디오 다운로드 옵션 -->
+        <div class="format-selector">
+          <el-select v-model="selectedFormat" placeholder="해상도 선택" size="large">
+            <el-option
+              v-for="format in videoFormats"
+              :key="format.quality"
+              :label="format.quality"
+              :value="format.url"
+            />
+          </el-select>
+
+          <el-button
+            type="success"
+            @click="handleVideoDownload"
+            :loading="downloading"
+            size="large"
+          >
+            비디오 다운로드
+          </el-button>
+        </div>
 
         <!-- 오디오 다운로드 버튼 -->
-        <el-button
-          type="primary"
-          @click="handleAudioDownload"
-          :loading="downloadingAudio"
-          size="large"
-        >
-          오디오만 다운로드 (MP3)
-        </el-button>
+        <div class="audio-download">
+          <el-button
+            type="primary"
+            @click="handleAudioDownload"
+            :loading="downloadingAudio"
+            size="large"
+          >
+            오디오만 다운로드 (MP3)
+          </el-button>
+        </div>
       </div>
     </div>
 
@@ -50,7 +68,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { VideoCamera } from '@element-plus/icons-vue'
 import axios from 'axios'
 
@@ -60,6 +78,16 @@ const downloading = ref(false)
 const downloadingAudio = ref(false)
 const error = ref('')
 const videoInfo = ref(null)
+const selectedFormat = ref(null)
+
+// 비디오 포맷 계산
+const videoFormats = computed(() => {
+  if (!videoInfo.value || !videoInfo.value.formats || videoInfo.value.formats.length === 0)
+    return []
+
+  // 서버에서 제공하는 포맷 사용
+  return videoInfo.value.formats
+})
 
 const getVideoInfo = async () => {
   if (!url.value) {
@@ -73,6 +101,11 @@ const getVideoInfo = async () => {
   try {
     const response = await axios.post('/api/instagram/info', { url: url.value })
     videoInfo.value = response.data
+
+    // 첫 번째 포맷(최고 품질) 선택
+    if (videoInfo.value.formats && videoInfo.value.formats.length > 0) {
+      selectedFormat.value = videoInfo.value.formats[0].url
+    }
   } catch (err) {
     console.error('Error:', err)
     error.value = '비디오 정보를 가져오는데 실패했습니다'
@@ -82,8 +115,8 @@ const getVideoInfo = async () => {
 }
 
 const handleVideoDownload = async () => {
-  if (!videoInfo.value) {
-    error.value = '먼저 URL 정보를 가져와주세요'
+  if (!selectedFormat.value) {
+    error.value = '해상도를 선택해주세요'
     return
   }
 
@@ -93,7 +126,10 @@ const handleVideoDownload = async () => {
   try {
     const response = await axios.post(
       '/api/download/instagram/video',
-      { url: url.value },
+      {
+        url: url.value,
+        videoUrl: selectedFormat.value,
+      },
       { responseType: 'blob' },
     )
 
@@ -183,6 +219,19 @@ h2 {
   gap: 1rem;
   align-items: center;
   margin-top: 1rem;
+}
+
+.format-selector {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  width: 100%;
+}
+
+.audio-download {
+  width: 100%;
+  display: flex;
+  justify-content: center;
 }
 
 .error-message {
