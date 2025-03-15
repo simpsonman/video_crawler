@@ -22,7 +22,7 @@ if (!fs.existsSync(downloadDir)) {
 }
 
 // 테스트 엔드포인트
-app.get('/test', (req, res) => {
+app.get('/api/test', (req, res) => {
   res.json({ message: 'Server is working!' })
 })
 
@@ -41,7 +41,7 @@ function sanitizeFilename(filename) {
 }
 
 // 비디오 정보 및 포맷 가져오기
-app.post('/youtube/info', async (req, res) => {
+app.post('/api/youtube/info', async (req, res) => {
   try {
     const { url } = req.body
     if (!url) {
@@ -109,7 +109,7 @@ app.post('/youtube/info', async (req, res) => {
 })
 
 // 다운로드 엔드포인트 수정
-app.post('/download/youtube', async (req, res) => {
+app.post('/api/download/youtube', async (req, res) => {
   try {
     const { url, itag } = req.body
     console.log('Received URL:', url, 'itag:', itag)
@@ -199,7 +199,7 @@ app.post('/download/youtube', async (req, res) => {
 })
 
 // 오디오 다운로드 엔드포인트 추가
-app.post('/download/youtube/audio', async (req, res) => {
+app.post('/api/download/youtube/audio', async (req, res) => {
   try {
     const { url } = req.body
     if (!url) {
@@ -390,7 +390,7 @@ async function getInstagramVideoUrl(url) {
 }
 
 // 인스타그램 정보 가져오기
-app.post('/instagram/info', async (req, res) => {
+app.post('/api/instagram/info', async (req, res) => {
   try {
     const { url } = req.body
     if (!url) {
@@ -418,7 +418,7 @@ app.post('/instagram/info', async (req, res) => {
 })
 
 // 인스타그램 비디오 다운로드 함수 수정
-app.post('/download/instagram/video', async (req, res) => {
+app.post('/api/download/instagram/video', async (req, res) => {
   try {
     const { url } = req.body
     if (!url) {
@@ -494,7 +494,7 @@ app.post('/download/instagram/video', async (req, res) => {
 })
 
 // 인스타그램 오디오 다운로드
-app.post('/download/instagram/audio', async (req, res) => {
+app.post('/api/download/instagram/audio', async (req, res) => {
   try {
     const { url } = req.body
     if (!url) {
@@ -713,7 +713,7 @@ app.post('/api/twitter/info', async (req, res) => {
 })
 
 // Twitter 비디오 다운로드
-app.post('/download/twitter', async (req, res) => {
+app.post('/api/download/twitter', async (req, res) => {
   try {
     const { url } = req.body
     if (!url) {
@@ -811,7 +811,7 @@ app.post('/download/twitter', async (req, res) => {
 })
 
 // Twitter 오디오 다운로드
-app.post('/download/twitter/audio', async (req, res) => {
+app.post('/api/download/twitter/audio', async (req, res) => {
   try {
     const { url } = req.body
     if (!url) {

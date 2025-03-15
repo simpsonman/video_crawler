@@ -22,7 +22,7 @@
 
     <!-- 비디오 정보 표시 -->
     <div v-if="videoInfo" class="video-info">
-      <img :src="videoInfo.thumbnail" alt="썸네일" class="thumbnail" />
+      <!-- <img :src="videoInfo.thumbnail" alt="썸네일" class="thumbnail" /> -->
 
       <div class="download-options">
         <!-- 비디오 다운로드 옵션 -->
@@ -42,7 +42,7 @@
         </div>
 
         <!-- 오디오 다운로드 버튼 -->
-        <div class="audio-download">
+        <!-- <div class="audio-download">
           <el-button
             type="primary"
             @click="handleAudioDownload"
@@ -51,7 +51,7 @@
           >
             오디오만 다운로드 (MP3)
           </el-button>
-        </div>
+        </div> -->
       </div>
     </div>
 
