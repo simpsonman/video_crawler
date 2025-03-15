@@ -693,7 +693,7 @@ async function getTwitterVideoUrl(url) {
 }
 
 // Twitter 정보 가져오기
-app.post('/twitter/info', async (req, res) => {
+app.post('/api/twitter/info', async (req, res) => {
   try {
     const { url } = req.body
     if (!url) {
