@@ -7,7 +7,7 @@ import DownloaderTabs from './components/DownloaderTabs.vue'
 <template>
   <div class="app">
     <header>
-      <h1>SNS 비디오 다운로더</h1>
+      <h1>Youtube, X(Twitter) Video Downloader</h1>
     </header>
     <main>
       <downloader-tabs />
