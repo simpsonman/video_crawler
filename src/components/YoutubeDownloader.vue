@@ -81,6 +81,16 @@
     <div v-if="error" class="error-message">
       {{ error }}
     </div>
+
+    <!-- 로딩 팝업 추가 -->
+    <LoadingPopup
+      :visible="showLoadingPopup"
+      :title="loadingTitle"
+      :message="loadingMessage"
+      :progress="loadingProgress"
+      :showCancelButton="loadingCancelable"
+      @cancel="handleCancelLoading"
+    />
   </div>
 </template>
 
@@ -88,6 +98,7 @@
 import { ref, computed } from 'vue'
 import { VideoCamera } from '@element-plus/icons-vue'
 import axios from 'axios'
+import LoadingPopup from './LoadingPopup.vue'
 
 const url = ref('')
 const loading = ref(false)
@@ -96,6 +107,78 @@ const downloadingAudio = ref(false)
 const error = ref('')
 const videoInfo = ref(null)
 const selectedFormat = ref(null)
+
+// 로딩 팝업 상태 관리
+const showLoadingPopup = ref(false)
+const loadingTitle = ref('Processing...')
+const loadingMessage = ref('Please wait a moment')
+const loadingProgress = ref(0)
+const loadingCancelable = ref(true)
+
+// 진행 상태 인터벌 ID
+let progressInterval = null
+
+// 진행 상태 시뮬레이션 시작
+const startProgressSimulation = (action) => {
+  showLoadingPopup.value = true
+  loadingProgress.value = 0
+
+  if (action === 'info') {
+    loadingTitle.value = 'Get video information'
+    loadingMessage.value = 'Getting video information from YouTube...'
+    // 정보 가져오기는 빠르게 진행
+    simulateProgress(80, 300)
+  } else if (action === 'video') {
+    loadingTitle.value = 'Downloading video'
+    loadingMessage.value = 'Downloading video from YouTube...'
+    // 비디오 다운로드는 천천히 진행
+    simulateProgress(95, 500)
+  } else if (action === 'audio') {
+    loadingTitle.value = 'Audio download'
+    loadingMessage.value = 'Extracting audio from YouTube...'
+    // 오디오 다운로드는 중간 속도로 진행
+    simulateProgress(90, 400)
+  }
+}
+
+// 진행 상태 시뮬레이션
+const simulateProgress = (targetProgress, interval) => {
+  clearInterval(progressInterval)
+
+  progressInterval = setInterval(() => {
+    if (loadingProgress.value < targetProgress) {
+      loadingProgress.value += 1
+    } else {
+      clearInterval(progressInterval)
+    }
+  }, interval)
+}
+
+// 로딩 완료 처리
+const completeLoading = (success = true) => {
+  clearInterval(progressInterval)
+
+  if (success) {
+    loadingProgress.value = 100
+    setTimeout(() => {
+      showLoadingPopup.value = false
+      loadingProgress.value = 0
+    }, 500)
+  } else {
+    showLoadingPopup.value = false
+    loadingProgress.value = 0
+  }
+}
+
+// 로딩 취소 처리
+const handleCancelLoading = () => {
+  showLoadingPopup.value = false
+  clearInterval(progressInterval)
+  loadingProgress.value = 0
+  loading.value = false
+  downloading.value = false
+  downloadingAudio.value = false
+}
 
 // 라이브 스트리밍 여부 확인
 const isLiveStream = computed(() => {
@@ -122,13 +205,22 @@ const getVideoInfo = async () => {
   loading.value = true
   error.value = ''
 
+  // 로딩 팝업 표시
+  startProgressSimulation('info')
+
   try {
     const response = await axios.post('/api/youtube/info', { url: url.value })
     videoInfo.value = response.data
     selectedFormat.value = videoInfo.value.formats[0]?.itag // 최고 품질 기본 선택
+
+    // 로딩 완료
+    completeLoading(true)
   } catch (err) {
     console.error('Error:', err)
     error.value = 'Failed to get video information'
+
+    // 로딩 실패
+    completeLoading(false)
   } finally {
     loading.value = false
   }
@@ -150,6 +242,9 @@ const handleDownload = async () => {
   downloading.value = true
   error.value = ''
 
+  // 로딩 팝업 표시
+  startProgressSimulation('video')
+
   try {
     const response = await axios.post(
       '/api/download/youtube',
@@ -162,29 +257,36 @@ const handleDownload = async () => {
       },
     )
 
-    const blob = new Blob([response.data], { type: 'video/mp4' })
-    const downloadUrl = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = downloadUrl
+    // 다운로드 완료 표시
+    loadingProgress.value = 100
+    loadingMessage.value = 'Download completed! Please save the file...'
 
-    // 파일명 설정
-    const fileName = isLiveStream.value
-      ? `${videoInfo.value.title || 'live'}_segment.mp4`
-      : `${videoInfo.value.title}.mp4`
+    setTimeout(() => {
+      const blob = new Blob([response.data], { type: 'video/mp4' })
+      const downloadUrl = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = downloadUrl
 
-    link.download = fileName
-    document.body.appendChild(link)
-    link.click()
-    window.URL.revokeObjectURL(downloadUrl)
-    document.body.removeChild(link)
+      // 파일명 설정
+      const fileName = isLiveStream.value
+        ? `${videoInfo.value.title || 'live'}_segment.mp4`
+        : `${videoInfo.value.title}.mp4`
 
-    // 라이브 스트리밍인 경우 안내 메시지 표시
-    if (isLiveStream.value) {
-      error.value = 'Live stream segment downloaded. You can download more segments.'
-    }
+      link.download = fileName
+      document.body.appendChild(link)
+      link.click()
+      window.URL.revokeObjectURL(downloadUrl)
+      document.body.removeChild(link)
+
+      // 로딩 완료
+      completeLoading(true)
+    }, 500)
   } catch (err) {
     console.error('Download error:', err)
     error.value = 'An error occurred during download'
+
+    // 로딩 실패
+    completeLoading(false)
   } finally {
     downloading.value = false
   }
@@ -206,6 +308,9 @@ const handleAudioDownload = async () => {
   downloadingAudio.value = true
   error.value = ''
 
+  // 로딩 팝업 표시
+  startProgressSimulation('audio')
+
   try {
     const response = await axios.post(
       '/api/download/youtube/audio',
@@ -213,18 +318,30 @@ const handleAudioDownload = async () => {
       { responseType: 'blob' },
     )
 
-    const blob = new Blob([response.data], { type: 'audio/mp3' })
-    const downloadUrl = window.URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = downloadUrl
-    link.download = `${videoInfo.value.title}.mp3`
-    document.body.appendChild(link)
-    link.click()
-    window.URL.revokeObjectURL(downloadUrl)
-    document.body.removeChild(link)
+    // 다운로드 완료 표시
+    loadingProgress.value = 100
+    loadingMessage.value = 'Download completed! Please save the file...'
+
+    setTimeout(() => {
+      const blob = new Blob([response.data], { type: 'audio/mp3' })
+      const downloadUrl = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = downloadUrl
+      link.download = `${videoInfo.value.title}.mp3`
+      document.body.appendChild(link)
+      link.click()
+      window.URL.revokeObjectURL(downloadUrl)
+      document.body.removeChild(link)
+
+      // 로딩 완료
+      completeLoading(true)
+    }, 500)
   } catch (err) {
     console.error('Audio download error:', err)
     error.value = 'An error occurred during audio download'
+
+    // 로딩 실패
+    completeLoading(false)
   } finally {
     downloadingAudio.value = false
   }

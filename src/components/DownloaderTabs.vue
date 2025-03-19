@@ -17,7 +17,7 @@
 <script setup>
 import { ref } from 'vue'
 import YoutubeDownloader from './YoutubeDownloader.vue'
-// import InstagramDownloader from './InstagramDownloader.vue'
+import InstagramDownloader from './InstagramDownloader.vue'
 import TwitterDownloader from './TwitterDownloader.vue'
 
 const activeTab = ref('youtube')
