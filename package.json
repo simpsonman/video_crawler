@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
+    "dev": "vite",
     "build": "vite build",
-    "serve": "vite preview",
-    "lint": "eslint . --ext .js,.vue",
+    "preview": "vite preview",
+    "lint": "eslint . --fix",
     "format": "prettier --write src/"
   },
   "dependencies": {
