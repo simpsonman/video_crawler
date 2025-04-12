@@ -4,25 +4,36 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    image: simpsonlee86/video_crawler_frontend:latest
+    image: video_crawler_frontend:latest
     container_name: vid_craw_front
     restart: always
     ports:
       - '5173:5173'
     networks:
-      - my_network
+      - app_network
+    volumes:
+      - './src:/app/src'
+    depends_on:
+      - backend
 
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    image: simpsonlee86/video_crawler_backend:latest
+    image: video_crawler_backend:latest
     container_name: vid_craw_back
     restart: always
     ports:
       - '5000:5000'
     networks:
-      - my_network
+      - app_network
+    volumes:
+      - './server:/app/server'
+      - './downloads:/app/downloads'
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
 
 networks:
-  my_network:
+  app_network:
+    driver: bridge

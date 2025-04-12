@@ -1,24 +1,41 @@
-# 1. Node.js LTS 이미지 사용
-FROM node:18
+# 1. Ubuntu 기반 이미지 사용 (더 안정적인 apt 지원)
+FROM ubuntu:22.04
 
-# 2. 필요한 도구 설치 (ffmpeg와 yt-dlp)
+# 시간대 설정 및 상호작용 방지
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Seoul
+
+# 2. Node.js, ffmpeg, python 설치
 RUN apt-get update && \
-    apt-get install -y ffmpeg python3 python3-pip && \
-    pip3 install -U yt-dlp && \
+    apt-get install -y curl gnupg ca-certificates && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && \
+    apt-get install -y nodejs ffmpeg python3 python3-pip wget && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# 3. 작업 디렉토리 설정
+# 3. yt-dlp 설치 (바이너리 직접 다운로드 방식)
+RUN wget -O /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp && \
+    chmod a+rx /usr/local/bin/yt-dlp
+
+# 4. 작업 디렉토리 설정
 WORKDIR /app
 
-# 4. 서버 코드 복사 및 의존성 설치
+# 5. 서버 코드 복사 및 의존성 설치
 COPY package*.json ./
 RUN npm install
 
+# 6. 서버 코드 복사
 COPY server ./server
 
-# 5. 컨테이너에서 사용할 포트 지정
+# 7. 다운로드 디렉토리 생성 및 권한 설정
+RUN mkdir -p server/temp && \
+    chmod -R 777 server/temp
+
+# 8. 컨테이너에서 사용할 포트 지정
 EXPOSE 5000
 
-# 6. 백엔드 실행
+# 9. 백엔드 실행
 CMD ["node", "server/index.js"]

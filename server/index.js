@@ -14,7 +14,14 @@ puppeteer.use(StealthPlugin())
 
 const app = express()
 
-app.use(cors())
+app.use(
+  cors({
+    origin: ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://172.30.1.36:5173'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true,
+  }),
+)
+
 app.use(express.json())
 
 // 임시 다운로드 폴더 생성
@@ -22,6 +29,9 @@ const downloadDir = path.join(__dirname, 'downloads')
 if (!fs.existsSync(downloadDir)) {
   fs.mkdirSync(downloadDir)
 }
+
+// 정적 파일 제공 경로 설정 (필요한 경우)
+app.use(express.static(path.join(__dirname, '../dist')))
 
 // 테스트 엔드포인트
 app.get('/api/test', (req, res) => {
