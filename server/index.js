@@ -1426,158 +1426,310 @@ app.post('/api/twitter/info', async (req, res) => {
 // Twitter 비디오 다운로드
 app.post('/api/download/twitter', async (req, res) => {
   try {
-    const { url } = req.body
+    const { url, videoUrl } = req.body
+
     if (!url) {
-      return res.status(400).json({ error: 'URL이 필요합니다' })
+      return res.status(400).json({ error: 'URL is required' })
     }
 
-    const videoInfo = await getTwitterVideoUrl(url)
-    const videoUrl = videoInfo.formats[0].url
+    if (!url.includes('twitter.com') && !url.includes('x.com')) {
+      return res.status(400).json({ error: 'Not a valid Twitter/X URL' })
+    }
+
+    console.log('Twitter download request received:', { url, videoUrl })
+
+    // videoUrl이 제공되면 해당 URL 사용, 아니면 getTwitterVideoUrl 함수로 가져오기
+    let targetVideoUrl
+    let isHls = false
+
+    if (videoUrl) {
+      console.log('Using provided videoUrl:', videoUrl)
+      targetVideoUrl = videoUrl
+      // m3u8 파일인지 확인
+      isHls = videoUrl.includes('.m3u8')
+    } else {
+      console.log('Fetching video URL from Twitter post')
+      const videoInfo = await getTwitterVideoUrl(url)
+      if (!videoInfo.formats || videoInfo.formats.length === 0) {
+        return res.status(404).json({ error: 'No video formats found' })
+      }
+
+      targetVideoUrl = videoInfo.formats[0].url
+      isHls = videoInfo.formats[0].type === 'm3u8' || targetVideoUrl.includes('.m3u8')
+    }
+
+    console.log('Target video URL:', targetVideoUrl, 'Is HLS:', isHls)
 
     const tempVideoPath = path.join(downloadDir, `twitter_video_${Date.now()}.mp4`)
-    const tempAudioPath = path.join(downloadDir, `twitter_audio_${Date.now()}.mp3`)
     const outputPath = path.join(downloadDir, `twitter_final_${Date.now()}.mp4`)
 
     try {
-      // 비디오 다운로드
-      await new Promise((resolve, reject) => {
-        ffmpeg()
-          .input(videoUrl)
-          .inputOptions([
-            '-protocol_whitelist',
-            'file,http,https,tcp,tls,crypto,pipe,hls',
-            '-allowed_extensions',
-            'ALL',
-          ])
-          .outputOptions(['-c', 'copy'])
-          .output(tempVideoPath)
-          .on('end', resolve)
-          .on('error', reject)
-          .run()
-      })
+      // HLS 스트림 다운로드 (m3u8)
+      if (isHls) {
+        console.log('Downloading HLS stream using FFmpeg')
 
-      // 비디오에서 오디오 추출
-      await new Promise((resolve, reject) => {
-        ffmpeg()
-          .input(videoUrl)
-          .inputOptions([
-            '-protocol_whitelist',
-            'file,http,https,tcp,tls,crypto,pipe,hls',
-            '-allowed_extensions',
-            'ALL',
-          ])
-          .outputOptions(['-vn', '-acodec', 'libmp3lame', '-q:a', '2'])
-          .output(tempAudioPath)
-          .on('end', resolve)
-          .on('error', reject)
-          .run()
-      })
+        // FFmpeg 명령어로 HLS 스트림 다운로드
+        await new Promise((resolve, reject) => {
+          ffmpeg()
+            .input(targetVideoUrl)
+            .inputOptions([
+              '-protocol_whitelist',
+              'file,http,https,tcp,tls,crypto,pipe,hls',
+              '-allowed_extensions',
+              'ALL',
+            ])
+            .outputOptions([
+              '-c',
+              'copy', // 코덱 복사
+              '-bsf:a',
+              'aac_adtstoasc', // AAC 비트스트림 필터
+            ])
+            .output(outputPath)
+            .on('start', (cmd) => console.log('FFmpeg command:', cmd))
+            .on('progress', (progress) => {
+              if (progress.percent) {
+                console.log(`Processing: ${Math.round(progress.percent)}% done`)
+              }
+            })
+            .on('end', () => {
+              console.log('FFmpeg processing finished')
+              resolve()
+            })
+            .on('error', (err) => {
+              console.error('FFmpeg error:', err)
+              reject(err)
+            })
+            .run()
+        })
+      } else {
+        // 일반 비디오 다운로드 (HTTP)
+        console.log('Downloading direct video URL using Axios')
 
-      // 비디오와 오디오 합치기
-      await new Promise((resolve, reject) => {
-        ffmpeg()
-          .input(tempVideoPath)
-          .input(tempAudioPath)
-          .outputOptions([
-            '-c:v',
-            'copy',
-            '-c:a',
-            'aac',
-            '-strict',
-            'experimental',
-            '-map',
-            '0:v:0',
-            '-map',
-            '1:a:0',
-          ])
-          .on('start', (commandLine) => {
-            console.log('FFmpeg command:', commandLine)
-          })
-          .on('end', resolve)
-          .on('error', reject)
-          .save(outputPath)
-      })
+        const response = await axios({
+          method: 'get',
+          url: targetVideoUrl,
+          responseType: 'arraybuffer',
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            Referer: 'https://twitter.com/',
+          },
+          maxRedirects: 5,
+          timeout: 30000,
+        })
 
+        await fs.promises.writeFile(outputPath, Buffer.from(response.data))
+      }
+
+      // 파일 존재 확인
+      if (!fs.existsSync(outputPath)) {
+        return res.status(500).json({ error: 'Failed to download video, output file not found' })
+      }
+
+      // 파일 크기 확인
+      const stats = fs.statSync(outputPath)
+      if (stats.size === 0) {
+        fs.unlinkSync(outputPath)
+        return res.status(500).json({ error: 'Downloaded file is empty' })
+      }
+
+      console.log(`File downloaded successfully, size: ${stats.size} bytes`)
+
+      // 파일 스트리밍으로 응답
       res.setHeader('Content-Type', 'video/mp4')
-      res.setHeader('Content-Disposition', 'attachment; filename=twitter_video.mp4')
+      res.setHeader('Content-Disposition', `attachment; filename=twitter_video_${Date.now()}.mp4`)
+      res.setHeader('Content-Length', stats.size)
 
-      const readStream = fs.createReadStream(outputPath)
-      readStream.pipe(res)
+      const fileStream = fs.createReadStream(outputPath)
+      fileStream.pipe(res)
 
-      readStream.on('end', () => {
-        fs.unlink(tempVideoPath, () => {})
-        fs.unlink(tempAudioPath, () => {})
-        fs.unlink(outputPath, () => {})
+      // 파일 전송 완료 후 임시 파일 삭제
+      fileStream.on('end', () => {
+        try {
+          fs.unlinkSync(outputPath)
+          console.log(`Successfully deleted temporary file: ${outputPath}`)
+        } catch (err) {
+          console.error('Error deleting temp file:', err)
+        }
+      })
+
+      // 에러 처리
+      fileStream.on('error', (err) => {
+        console.error('File stream error:', err)
+        try {
+          fs.unlinkSync(outputPath)
+        } catch (unlinkErr) {
+          console.error('Error deleting file after stream error:', unlinkErr)
+        }
+
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Error streaming video file' })
+        }
       })
     } catch (err) {
-      fs.unlink(tempVideoPath, () => {})
-      fs.unlink(tempAudioPath, () => {})
-      if (fs.existsSync(outputPath)) fs.unlink(outputPath, () => {})
+      console.error('Download processing error:', err)
+
+      // 임시 파일 정리
+      try {
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath)
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath)
+      } catch (unlinkErr) {
+        console.error('Error cleaning up temp files:', unlinkErr)
+      }
+
       throw err
     }
   } catch (error) {
-    console.error('Download Error:', error)
-    res.status(500).json({ error: '다운로드 중 오류가 발생했습니다' })
+    console.error('Twitter download error:', error)
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: 'Failed to download Twitter video',
+        details: error.message,
+      })
+    }
   }
 })
 
 // Twitter 오디오 다운로드
 app.post('/api/download/twitter/audio', async (req, res) => {
   try {
-    const { url } = req.body
-    if (!url) {
-      return res.status(400).json({ error: 'URL이 필요합니다' })
+    const { url, videoUrl, isHls } = req.body
+
+    if (!url || !videoUrl) {
+      return res.status(400).json({ error: 'Valid Twitter URL and video URL are required.' })
     }
 
-    const videoInfo = await getTwitterVideoUrl(url)
-    const videoUrl = videoInfo.formats[0].url
+    // Temporary file paths
+    const tempDir = path.join(__dirname, 'temp')
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true })
+    }
 
-    const tempVideoPath = path.join(downloadDir, `twitter_video_${Date.now()}.mp4`)
-    const outputPath = path.join(downloadDir, `twitter_audio_${Date.now()}.mp3`)
+    const timestamp = Date.now()
+    const outputPath = path.join(tempDir, `twitter_audio_${timestamp}.mp3`)
+    const tempVideoPath = path.join(tempDir, `twitter_video_${timestamp}.mp4`)
 
     try {
-      const videoResponse = await axios({
-        method: 'get',
-        url: videoUrl,
-        responseType: 'arraybuffer',
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-          Referer: 'https://twitter.com/',
-        },
-      })
+      if (isHls) {
+        // Process HLS stream audio extraction
+        console.log('Extracting audio from HLS stream...')
 
-      await fs.promises.writeFile(tempVideoPath, Buffer.from(videoResponse.data))
+        // Extract audio directly from HLS using FFmpeg
+        await new Promise((resolve, reject) => {
+          const ffmpegProcess = spawn('ffmpeg', [
+            '-i',
+            videoUrl,
+            '-vn', // Remove video
+            '-acodec',
+            'libmp3lame', // Use MP3 audio codec
+            '-ab',
+            '192k', // Audio bitrate
+            '-ar',
+            '44100', // Audio sample rate
+            '-y', // Overwrite existing files
+            outputPath,
+          ])
 
-      // FFmpeg를 사용하여 오디오 추출
-      await new Promise((resolve, reject) => {
-        ffmpeg()
-          .input(tempVideoPath)
-          .outputOptions(['-vn', '-acodec', 'libmp3lame', '-q:a', '0'])
-          .output(outputPath)
-          .on('end', resolve)
-          .on('error', reject)
-          .run()
-      })
+          ffmpegProcess.stderr.on('data', (data) => {
+            console.log(`FFmpeg log: ${data}`)
+          })
 
+          ffmpegProcess.on('close', (code) => {
+            if (code === 0) {
+              resolve()
+            } else {
+              reject(new Error(`FFmpeg error code: ${code}`))
+            }
+          })
+        })
+      } else {
+        // For regular video URLs, download the video first
+        await new Promise((resolve, reject) => {
+          const ffmpegProcess = spawn('ffmpeg', ['-i', videoUrl, '-c', 'copy', '-y', tempVideoPath])
+
+          ffmpegProcess.stderr.on('data', (data) => {
+            console.log(`FFmpeg log (video download): ${data}`)
+          })
+
+          ffmpegProcess.on('close', (code) => {
+            if (code === 0) {
+              resolve()
+            } else {
+              reject(new Error(`FFmpeg video download error code: ${code}`))
+            }
+          })
+        })
+
+        // Extract audio from video
+        await new Promise((resolve, reject) => {
+          const ffmpegProcess = spawn('ffmpeg', [
+            '-i',
+            tempVideoPath,
+            '-vn',
+            '-acodec',
+            'libmp3lame',
+            '-ab',
+            '192k',
+            '-ar',
+            '44100',
+            '-y',
+            outputPath,
+          ])
+
+          ffmpegProcess.stderr.on('data', (data) => {
+            console.log(`FFmpeg log (audio extraction): ${data}`)
+          })
+
+          ffmpegProcess.on('close', (code) => {
+            if (code === 0) {
+              resolve()
+            } else {
+              reject(new Error(`FFmpeg audio extraction error code: ${code}`))
+            }
+          })
+        })
+
+        // Delete temporary video file
+        if (fs.existsSync(tempVideoPath)) {
+          fs.unlinkSync(tempVideoPath)
+        }
+      }
+
+      // Stream the generated MP3 file
+      const stat = fs.statSync(outputPath)
       res.setHeader('Content-Type', 'audio/mp3')
-      res.setHeader('Content-Disposition', 'attachment; filename=twitter_audio.mp3')
+      res.setHeader('Content-Length', stat.size)
 
-      const readStream = fs.createReadStream(outputPath)
-      readStream.pipe(res)
+      const fileStream = fs.createReadStream(outputPath)
+      fileStream.pipe(res)
 
-      readStream.on('end', () => {
-        fs.unlink(tempVideoPath, () => {})
-        fs.unlink(outputPath, () => {})
+      // Delete temporary file when stream ends
+      fileStream.on('end', () => {
+        try {
+          if (fs.existsSync(outputPath)) {
+            fs.unlinkSync(outputPath)
+            console.log(`Temporary file deleted: ${outputPath}`)
+          }
+        } catch (cleanupErr) {
+          console.error('Temporary file cleanup error:', cleanupErr)
+        }
       })
-    } catch (err) {
-      fs.unlink(tempVideoPath, () => {})
-      fs.unlink(outputPath, () => {})
-      throw err
+    } catch (ffmpegErr) {
+      console.error('FFmpeg processing error:', ffmpegErr)
+
+      // Clean up temporary files
+      try {
+        if (fs.existsSync(tempVideoPath)) fs.unlinkSync(tempVideoPath)
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath)
+      } catch (cleanupErr) {
+        console.error('Temporary file cleanup error:', cleanupErr)
+      }
+
+      return res.status(500).json({ error: 'Error occurred during audio extraction.' })
     }
-  } catch (error) {
-    console.error('Download Error:', error)
-    res.status(500).json({ error: '오디오 추출 중 오류가 발생했습니다' })
+  } catch (err) {
+    console.error('Twitter audio processing error:', err)
+    return res.status(500).json({ error: 'Error occurred during audio processing.' })
   }
 })
 
