@@ -1,11 +1,11 @@
 <template>
   <div class="instagram-downloader">
-    <h2>Instagram 비디오 다운로더</h2>
+    <h2>Instagram Video Downloader</h2>
 
     <div class="input-container">
       <el-input
         v-model="url"
-        placeholder="Instagram URL을 입력해주세요"
+        placeholder="Enter Instagram URL"
         :disabled="loading"
         size="large"
         clearable
@@ -16,19 +16,19 @@
       </el-input>
 
       <el-button type="primary" @click="getVideoInfo" :loading="loading" size="large">
-        정보 가져오기
+        Get Information
       </el-button>
     </div>
 
-    <!-- 비디오 정보 표시 -->
+    <!-- Video information display -->
     <div v-if="videoInfo" class="video-info">
-      <h3>Instagram 콘텐츠</h3>
-      <img :src="videoInfo.thumbnail" alt="썸네일" class="thumbnail" />
+      <h3>Instagram Content</h3>
+      <img :src="videoInfo.thumbnail" alt="Thumbnail" class="thumbnail" />
 
       <div class="download-options">
-        <!-- 비디오 다운로드 옵션 -->
+        <!-- Video download options -->
         <div class="format-selector">
-          <el-select v-model="selectedFormat" placeholder="해상도 선택" size="large">
+          <el-select v-model="selectedFormat" placeholder="Select Resolution" size="large">
             <el-option
               v-for="format in videoFormats"
               :key="format.quality"
@@ -43,11 +43,11 @@
             :loading="downloading"
             size="large"
           >
-            비디오 다운로드
+            Download Video
           </el-button>
         </div>
 
-        <!-- 오디오 다운로드 버튼 -->
+        <!-- Audio download button -->
         <div class="audio-download">
           <el-button
             type="primary"
@@ -55,7 +55,7 @@
             :loading="downloadingAudio"
             size="large"
           >
-            오디오만 다운로드 (MP3)
+            Download Audio Only (MP3)
           </el-button>
         </div>
       </div>
@@ -65,7 +65,7 @@
       {{ error }}
     </div>
 
-    <!-- 로딩 팝업 추가 -->
+    <!-- Loading popup addition -->
     <LoadingPopup
       :visible="showLoadingPopup"
       :title="loadingTitle"
@@ -91,40 +91,40 @@ const error = ref('')
 const videoInfo = ref(null)
 const selectedFormat = ref(null)
 
-// 로딩 팝업 상태 관리
+// Loading popup state management
 const showLoadingPopup = ref(false)
-const loadingTitle = ref('처리 중...')
-const loadingMessage = ref('잠시만 기다려주세요')
+const loadingTitle = ref('Processing...')
+const loadingMessage = ref('Please wait a moment')
 const loadingProgress = ref(0)
 const loadingCancelable = ref(true)
 
-// 진행 상태 인터벌 ID
+// Progress state interval ID
 let progressInterval = null
 
-// 진행 상태 시뮬레이션 시작
+// Progress state simulation start
 const startProgressSimulation = (action) => {
   showLoadingPopup.value = true
   loadingProgress.value = 0
 
   if (action === 'info') {
-    loadingTitle.value = '인스타그램 콘텐츠 정보 가져오기'
-    loadingMessage.value = '인스타그램에서 콘텐츠 정보를 불러오는 중입니다...'
-    // 정보 가져오기는 빠르게 진행
+    loadingTitle.value = 'Getting Instagram Content Information'
+    loadingMessage.value = 'Loading content information from Instagram...'
+    // Information retrieval is quick
     simulateProgress(80, 300)
   } else if (action === 'video') {
-    loadingTitle.value = '동영상 다운로드'
-    loadingMessage.value = '인스타그램에서 동영상을 다운로드하는 중입니다...'
-    // 비디오 다운로드는 천천히 진행
+    loadingTitle.value = 'Video Download'
+    loadingMessage.value = 'Downloading video from Instagram...'
+    // Video download progresses slowly
     simulateProgress(95, 400)
   } else if (action === 'audio') {
-    loadingTitle.value = '오디오 다운로드'
-    loadingMessage.value = '인스타그램에서 오디오를 추출하는 중입니다...'
-    // 오디오 다운로드는 중간 속도로 진행
+    loadingTitle.value = 'Audio Download'
+    loadingMessage.value = 'Extracting audio from Instagram...'
+    // Audio download progresses at medium speed
     simulateProgress(90, 350)
   }
 }
 
-// 진행 상태 시뮬레이션
+// Progress state simulation
 const simulateProgress = (targetProgress, interval) => {
   clearInterval(progressInterval)
 
@@ -137,7 +137,7 @@ const simulateProgress = (targetProgress, interval) => {
   }, interval)
 }
 
-// 로딩 완료 처리
+// Loading completion handler
 const completeLoading = (success = true) => {
   clearInterval(progressInterval)
 
@@ -153,7 +153,7 @@ const completeLoading = (success = true) => {
   }
 }
 
-// 로딩 취소 처리
+// Loading cancellation handler
 const handleCancelLoading = () => {
   showLoadingPopup.value = false
   clearInterval(progressInterval)
@@ -163,43 +163,43 @@ const handleCancelLoading = () => {
   downloadingAudio.value = false
 }
 
-// 비디오 포맷 계산
+// Video format calculation
 const videoFormats = computed(() => {
   if (!videoInfo.value || !videoInfo.value.formats || videoInfo.value.formats.length === 0)
     return []
 
-  // 서버에서 제공하는 포맷 사용
+  // Use formats provided by the server
   return videoInfo.value.formats
 })
 
 const getVideoInfo = async () => {
   if (!url.value) {
-    error.value = 'URL을 입력해주세요'
+    error.value = 'Please enter a URL'
     return
   }
 
   loading.value = true
   error.value = ''
 
-  // 로딩 팝업 표시
+  // Loading popup display
   startProgressSimulation('info')
 
   try {
     const response = await axios.post('/api/instagram/info', { url: url.value })
     videoInfo.value = response.data
 
-    // 첫 번째 포맷(최고 품질) 선택
+    // Select the first format (highest quality)
     if (videoInfo.value.formats && videoInfo.value.formats.length > 0) {
       selectedFormat.value = videoInfo.value.formats[0].url
     }
 
-    // 로딩 완료
+    // Loading completion
     completeLoading(true)
   } catch (err) {
     console.error('Error:', err)
-    error.value = '비디오 정보를 가져오는데 실패했습니다'
+    error.value = 'Failed to retrieve video information'
 
-    // 로딩 실패
+    // Loading failure
     completeLoading(false)
   } finally {
     loading.value = false
@@ -208,14 +208,14 @@ const getVideoInfo = async () => {
 
 const handleVideoDownload = async () => {
   if (!selectedFormat.value) {
-    error.value = '해상도를 선택해주세요'
+    error.value = 'Please select a resolution'
     return
   }
 
   downloading.value = true
   error.value = ''
 
-  // 로딩 팝업 표시
+  // Loading popup display
   startProgressSimulation('video')
 
   try {
@@ -228,9 +228,9 @@ const handleVideoDownload = async () => {
       { responseType: 'blob' },
     )
 
-    // 다운로드 완료 표시
+    // Download completion notification
     loadingProgress.value = 100
-    loadingMessage.value = '다운로드 완료! 파일을 저장합니다...'
+    loadingMessage.value = 'Download complete! Saving file...'
 
     setTimeout(() => {
       const blob = new Blob([response.data], { type: 'video/mp4' })
@@ -243,14 +243,14 @@ const handleVideoDownload = async () => {
       window.URL.revokeObjectURL(downloadUrl)
       document.body.removeChild(link)
 
-      // 로딩 완료
+      // Loading completion
       completeLoading(true)
     }, 500)
   } catch (err) {
     console.error('Download error:', err)
-    error.value = '다운로드 중 오류가 발생했습니다'
+    error.value = 'An error occurred during download'
 
-    // 로딩 실패
+    // Loading failure
     completeLoading(false)
   } finally {
     downloading.value = false
@@ -259,14 +259,14 @@ const handleVideoDownload = async () => {
 
 const handleAudioDownload = async () => {
   if (!videoInfo.value) {
-    error.value = '먼저 URL 정보를 가져와주세요'
+    error.value = 'Please get URL information first'
     return
   }
 
   downloadingAudio.value = true
   error.value = ''
 
-  // 로딩 팝업 표시
+  // Loading popup display
   startProgressSimulation('audio')
 
   try {
@@ -276,9 +276,9 @@ const handleAudioDownload = async () => {
       { responseType: 'blob' },
     )
 
-    // 다운로드 완료 표시
+    // Download completion notification
     loadingProgress.value = 100
-    loadingMessage.value = '다운로드 완료! 파일을 저장합니다...'
+    loadingMessage.value = 'Download complete! Saving file...'
 
     setTimeout(() => {
       const blob = new Blob([response.data], { type: 'audio/mp3' })
@@ -291,14 +291,14 @@ const handleAudioDownload = async () => {
       window.URL.revokeObjectURL(downloadUrl)
       document.body.removeChild(link)
 
-      // 로딩 완료
+      // Loading completion
       completeLoading(true)
     }, 500)
   } catch (err) {
     console.error('Audio download error:', err)
-    error.value = '오디오 다운로드 중 오류가 발생했습니다'
+    error.value = 'An error occurred during audio download'
 
-    // 로딩 실패
+    // Loading failure
     completeLoading(false)
   } finally {
     downloadingAudio.value = false

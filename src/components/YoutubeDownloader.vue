@@ -210,8 +210,19 @@ const getVideoInfo = async () => {
 
   try {
     const response = await axios.post('/api/youtube/info', { url: url.value })
+
+    if (!response || !response.data) {
+      throw new Error('Invalid response from server')
+    }
+
     videoInfo.value = response.data
-    selectedFormat.value = videoInfo.value.formats[0]?.itag // 최고 품질 기본 선택
+
+    // formats가 존재하고 배열인지 확인
+    if (Array.isArray(videoInfo.value.formats) && videoInfo.value.formats.length > 0) {
+      selectedFormat.value = videoInfo.value.formats[0]?.itag // 최고 품질 기본 선택
+    } else {
+      console.warn('No formats available or formats is not an array')
+    }
 
     // 로딩 완료
     completeLoading(true)
@@ -262,15 +273,18 @@ const handleDownload = async () => {
     loadingMessage.value = 'Download completed! Please save the file...'
 
     setTimeout(() => {
+      if (!response.data) {
+        throw new Error('No data received from server')
+      }
+
       const blob = new Blob([response.data], { type: 'video/mp4' })
       const downloadUrl = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = downloadUrl
 
-      // 파일명 설정
-      const fileName = isLiveStream.value
-        ? `${videoInfo.value.title || 'live'}_segment.mp4`
-        : `${videoInfo.value.title}.mp4`
+      // 파일명 설정 (안전하게 처리)
+      const safeTitle = videoInfo.value?.title || 'youtube_video'
+      const fileName = isLiveStream.value ? `${safeTitle}_segment.mp4` : `${safeTitle}.mp4`
 
       link.download = fileName
       document.body.appendChild(link)
@@ -323,11 +337,19 @@ const handleAudioDownload = async () => {
     loadingMessage.value = 'Download completed! Please save the file...'
 
     setTimeout(() => {
+      if (!response.data) {
+        throw new Error('No data received from server')
+      }
+
       const blob = new Blob([response.data], { type: 'audio/mp3' })
       const downloadUrl = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = downloadUrl
-      link.download = `${videoInfo.value.title}.mp3`
+
+      // 안전한 파일명 처리
+      const safeTitle = videoInfo.value?.title || 'youtube_audio'
+      link.download = `${safeTitle}.mp3`
+
       document.body.appendChild(link)
       link.click()
       window.URL.revokeObjectURL(downloadUrl)

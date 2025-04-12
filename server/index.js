@@ -45,8 +45,9 @@ function sanitizeFilename(filename) {
 // YouTube 영상이 라이브 스트리밍인지 확인하는 함수
 async function isYoutubeLive(url) {
   try {
-    const info = await ytdl.getBasicInfo(url)
-    return info.videoDetails.isLiveContent
+    // yt-dlp를 사용하여 확인
+    const info = await getVideoInfoWithYtDlp(url)
+    return info.is_live || false
   } catch (error) {
     console.error('Error checking live status:', error)
     return false
@@ -76,7 +77,18 @@ function downloadHLSStream(m3u8Url, outputPath) {
 // yt-dlp를 사용하여 영상 정보 가져오기
 function getVideoInfoWithYtDlp(url) {
   return new Promise((resolve, reject) => {
-    const ytDlp = spawn('yt-dlp', ['--dump-json', url])
+    // yt-dlp 명령어 구성 - 추가 옵션으로 안정성 강화
+    const args = [
+      '--dump-json',
+      '--no-warnings',
+      '--no-check-certificate',
+      '--no-playlist',
+      '--no-progress',
+      url,
+    ]
+
+    console.log(`Running yt-dlp with args: ${args.join(' ')}`)
+    const ytDlp = spawn('yt-dlp', args)
 
     let stdout = ''
     let stderr = ''
@@ -87,21 +99,49 @@ function getVideoInfoWithYtDlp(url) {
 
     ytDlp.stderr.on('data', (data) => {
       stderr += data.toString()
+      console.error(`yt-dlp stderr: ${data}`)
     })
 
     ytDlp.on('close', (code) => {
       if (code !== 0) {
+        console.error(`yt-dlp process exited with code ${code}: ${stderr}`)
         reject(new Error(`yt-dlp process exited with code ${code}: ${stderr}`))
         return
       }
 
       try {
-        const info = JSON.parse(stdout)
+        // stdout에서 JSON 데이터 추출 (여러 줄에 걸쳐 있는 경우 처리)
+        const jsonData = stdout.trim()
+        if (!jsonData) {
+          reject(new Error('No data returned from yt-dlp'))
+          return
+        }
+
+        const info = JSON.parse(jsonData)
+
+        // 중요한 프로퍼티 유효성 검사
+        if (!info) {
+          reject(new Error('Failed to parse video info'))
+          return
+        }
+
+        // 기본 메타데이터가 없는 경우 기본값 추가
+        info.id = info.id || url.split('v=')[1]?.split('&')[0] || url.split('/').pop()
+        info.title = info.title || 'Unknown Title'
+        info.thumbnail = info.thumbnail || `https://img.youtube.com/vi/${info.id}/maxresdefault.jpg`
+
         resolve(info)
       } catch (error) {
+        console.error(`Failed to parse yt-dlp output: ${error.message}`, stdout)
         reject(new Error(`Failed to parse yt-dlp output: ${error.message}`))
       }
     })
+
+    // 타임아웃 설정
+    setTimeout(() => {
+      ytDlp.kill()
+      reject(new Error('yt-dlp process timed out after 30 seconds'))
+    }, 30000)
   })
 }
 
@@ -140,121 +180,100 @@ app.post('/api/youtube/info', async (req, res) => {
       return res.status(400).json({ error: 'Not a valid YouTube URL' })
     }
 
-    // 라이브 스트리밍인지 확인
-    const isLive = await isYoutubeLive(url)
-
-    if (isLive) {
-      try {
-        // yt-dlp가 설치되어 있는지 확인
-        await new Promise((resolve, reject) => {
-          const check = spawn('yt-dlp', ['--version'])
-          check.on('close', (code) => {
-            if (code === 0) resolve()
-            else reject(new Error('yt-dlp is not installed'))
-          })
+    // yt-dlp 명령어를 사용하여 비디오 정보 가져오기
+    try {
+      // yt-dlp가 설치되어 있는지 확인
+      const checkResult = await new Promise((resolve, reject) => {
+        const check = spawn('yt-dlp', ['--version'])
+        let output = ''
+        check.stdout.on('data', (data) => {
+          output += data.toString()
         })
-
-        // yt-dlp로 라이브 스트리밍 정보 가져오기
-        const info = await getVideoInfoWithYtDlp(url)
-
-        // 포맷 정보 추출
-        const formats = info.formats
-          .filter((format) => format.resolution !== 'audio only' && format.fps)
-          .map((format) => ({
-            itag: format.format_id,
-            quality: format.resolution,
-            fps: format.fps,
-            hasAudio: format.acodec !== 'none',
-          }))
-          .sort((a, b) => {
-            const resA = parseInt(a.quality?.split('x')[1] || 0)
-            const resB = parseInt(b.quality?.split('x')[1] || 0)
-            return resB - resA
-          })
-
-        return res.json({
-          title: info.title,
-          thumbnail: info.thumbnail,
-          isLive: true,
-          formats,
-          isPremiumFeature: true, // 프리미엄 기능 플래그 추가
-          premiumMessage: 'Live stream downloads are only available for premium subscribers',
+        check.on('close', (code) => {
+          if (code === 0) resolve(output.trim())
+          else reject(new Error('yt-dlp is not installed'))
         })
-      } catch (error) {
-        console.error('yt-dlp error:', error)
+      })
 
-        // Fallback: 라이브 스트리밍 기본 포맷만 제공
+      console.log('Using yt-dlp version:', checkResult)
+
+      // yt-dlp로 비디오 정보 가져오기
+      const videoInfo = await getVideoInfoWithYtDlp(url)
+      console.log('Got video info from yt-dlp')
+
+      // 라이브 스트리밍인지 확인
+      const isLive = videoInfo.is_live || false
+
+      if (isLive) {
+        // 라이브 스트리밍은 프리미엄 전용 기능으로 표시
+        const videoId = videoInfo.id || ytdl.getVideoID(url)
         return res.json({
-          title: '라이브 스트리밍',
-          thumbnail: `https://img.youtube.com/vi/${ytdl.getVideoID(url)}/maxresdefault.jpg`,
+          title: videoInfo.title || 'Live Stream',
+          thumbnail:
+            videoInfo.thumbnail || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
           isLive: true,
           formats: [
             {
               itag: 'best',
-              quality: 'Best available',
+              quality: 'Best quality',
               fps: 30,
               hasAudio: true,
             },
           ],
-          isPremiumFeature: true, // 프리미엄 기능 플래그 추가
-          premiumMessage: 'Live stream downloads are only available for premium subscribers',
+          isPremiumFeature: true,
+          premiumMessage: 'Live stream downloads are available only for premium subscribers',
+        })
+      } else {
+        // 일반 비디오 포맷 추출
+        const formats = videoInfo.formats
+          .filter(
+            (format) =>
+              format.vcodec !== 'none' && // 비디오가 있는 포맷만
+              !format.format_note?.includes('storyboard') && // 스토리보드 제외
+              format.format_id !== 'sb0', // 잘못된 포맷 제외
+          )
+          .map((format) => ({
+            itag: format.format_id,
+            quality: format.height ? `${format.height}p` : format.resolution || 'Unknown',
+            fps: format.fps || 0,
+            hasAudio: format.acodec !== 'none',
+          }))
+          .sort((a, b) => {
+            // 해상도로 정렬
+            const resA = parseInt(a.quality?.replace('p', '') || 0)
+            const resB = parseInt(b.quality?.replace('p', '') || 0)
+            if (resA !== resB) return resB - resA
+            // 해상도가 같으면 FPS로 정렬
+            return (b.fps || 0) - (a.fps || 0)
+          })
+
+        // 최소한 하나의 포맷이 있는지 확인
+        if (!formats || formats.length === 0) {
+          formats.push({
+            itag: 'best',
+            quality: 'Best available',
+            fps: 30,
+            hasAudio: true,
+          })
+        }
+
+        return res.json({
+          title: videoInfo.title || 'Unknown Title',
+          thumbnail:
+            videoInfo.thumbnail || `https://img.youtube.com/vi/${videoInfo.id}/maxresdefault.jpg`,
+          isLive: false,
+          formats,
         })
       }
-    } else {
-      // 일반 비디오 처리 (기존 코드)
-      const info = await ytdl.getInfo(url)
+    } catch (ytDlpError) {
+      // yt-dlp 에러 발생시 로그 출력
+      console.error('yt-dlp error:', ytDlpError)
 
-      // 최고 품질의 오디오 포맷 찾기
-      const bestAudioFormat = ytdl.chooseFormat(info.formats, {
-        quality: 'highestaudio',
-        filter: 'audioonly',
-      })
-
-      // 비디오 포맷 필터링 및 정리
-      const uniqueFormats = new Map()
-      info.formats
-        .filter((format) => format.hasVideo && format.contentLength) // 비디오가 있는 포맷만 선택
-        .forEach((format) => {
-          const key = `${format.qualityLabel}_${format.fps}`
-          const current = uniqueFormats.get(key)
-
-          // 오디오가 있는 포맷 우선, 없으면 나중에 합성
-          const shouldUpdate = !current || format.bitrate > current.bitrate
-
-          if (shouldUpdate) {
-            uniqueFormats.set(key, {
-              itag: format.itag,
-              quality: format.qualityLabel,
-              fps: format.fps,
-              hasAudio: format.hasAudio,
-              bitrate: format.bitrate,
-              videoFormat: format,
-              audioFormat: format.hasAudio ? null : bestAudioFormat, // 오디오가 없으면 최고 품질 오디오 포맷 저장
-            })
-          }
-        })
-
-      // Map을 배열로 변환하고 정렬
-      const formats = Array.from(uniqueFormats.values())
-        .sort((a, b) => {
-          // 해상도로 정렬
-          const resA = parseInt(a.quality?.replace('p', '') || 0)
-          const resB = parseInt(b.quality?.replace('p', '') || 0)
-          if (resA !== resB) return resB - resA
-          // 해상도가 같으면 FPS로 정렬
-          return b.fps - a.fps
-        })
-        .map(({ videoFormat, audioFormat, ...format }) => format) // 클라이언트에 필요한 정보만 전송
-
-      res.json({
-        title: info.videoDetails.title,
-        thumbnail: info.videoDetails.thumbnails[0].url,
-        isLive: false,
-        formats,
-      })
+      // ytdl-core 방식으로 폴백 시도 (더 이상 사용하지 않음)
+      throw new Error('yt-dlp failed: ' + ytDlpError.message)
     }
   } catch (error) {
-    console.error('Error:', error)
+    console.error('Error in info endpoint:', error)
     res.status(500).json({ error: 'Failed to get video information' })
   }
 })
@@ -269,190 +288,120 @@ app.post('/api/download/youtube', async (req, res) => {
       return res.status(400).json({ error: 'URL is required' })
     }
 
-    // 라이브 스트리밍인지 확인
-    const isLive = await isYoutubeLive(url)
+    // 임시 파일 저장 디렉토리 확인
+    if (!fs.existsSync(downloadDir)) {
+      fs.mkdirSync(downloadDir, { recursive: true })
+    }
 
-    if (isLive) {
-      try {
-        // 라이브 스트리밍은 프리미엄 전용 기능으로 처리
-        return res.status(402).json({
-          // 402 Payment Required
-          error: 'Live stream downloads are only available for premium subscribers',
-          isPremiumFeature: true,
-          details: 'Please upgrade your account to access this feature',
-        })
+    try {
+      // 간단한 고유 ID 생성
+      const timestamp = Date.now()
+      const randomStr = Math.random().toString(36).substring(2, 8)
+      const safeFilename = `youtube_${timestamp}_${randomStr}`
+      const outputPath = path.join(downloadDir, `${safeFilename}.mp4`)
 
-        // 기존 라이브 스트리밍 다운로드 코드는 주석 처리합니다.
-        /*
-        // 임시 파일 경로 설정
-        const timestamp = Date.now()
-        const outputPath = path.join(downloadDir, `live_stream_${timestamp}.mp4`)
+      // yt-dlp 명령어 구성 (비디오와 오디오 모두 다운로드하도록 수정)
+      let formatOptions = ''
 
-        // 기본 파일명 설정 (실제 타이틀은 나중에 확인)
-        let safeFilename = `live_stream_${timestamp}`
+      if (itag && itag !== 'best') {
+        // 특정 itag가 지정된 경우 해당 포맷 사용
+        formatOptions = `-f ${itag}+bestaudio/best`
+      } else {
+        // 기본: 최고 품질 비디오 + 최고 품질 오디오
+        formatOptions = '-f bestvideo+bestaudio/best'
+      }
 
-        try {
-          // yt-dlp로 정보 가져오기 시도
-          const info = await getVideoInfoWithYtDlp(url)
-          safeFilename = sanitizeFilename(info.title)
-        } catch (error) {
-          console.error('Error getting live stream info:', error)
+      // 최종 명령어: 오디오를 확실하게 포함하고, 오디오 코덱 지정
+      const command = `yt-dlp ${formatOptions} --merge-output-format mp4 --audio-quality 0 -o "${outputPath}" "${url}"`
+      console.log('Executing command:', command)
+
+      // yt-dlp 실행
+      const { exec } = require('child_process')
+      const download = exec(command)
+
+      let stderr = ''
+      download.stderr.on('data', (data) => {
+        stderr += data.toString()
+        console.error(`yt-dlp stderr: ${data}`)
+      })
+
+      let stdout = ''
+      download.stdout.on('data', (data) => {
+        stdout += data.toString()
+        console.log(`yt-dlp stdout: ${data}`)
+      })
+
+      download.on('close', (code) => {
+        console.log(`yt-dlp process exited with code ${code}`)
+
+        if (code !== 0) {
+          console.error('yt-dlp error details:', stderr)
+          return res.status(500).json({ error: 'Download failed', details: stderr })
         }
 
-        console.log('Downloading live stream to:', outputPath)
-
-        // 라이브 스트리밍 다운로드 - 시간 제한 설정 (-t 15)
-        const args = [
-          '-f',
-          itag === 'best' ? 'best' : itag,
-          '-o',
-          outputPath,
-          '--no-check-certificate',
-          '--no-warnings',
-          '--max-filesize',
-          '10M', // 15초 대신 최대 파일 크기 10MB로 제한
-          url,
-        ]
-
-        console.log('yt-dlp command:', 'yt-dlp', args.join(' '))
-
-        // 동기적으로 yt-dlp 실행 (Promise로 감싸서)
-        await new Promise((resolve, reject) => {
-          const downloadProcess = spawn('yt-dlp', args)
-
-          let stderr = ''
-          downloadProcess.stderr.on('data', (data) => {
-            stderr += data.toString()
-            console.log('yt-dlp stderr:', data.toString())
-          })
-
-          downloadProcess.stdout.on('data', (data) => {
-            console.log('yt-dlp stdout:', data.toString())
-          })
-
-          downloadProcess.on('close', (code) => {
-            console.log(`yt-dlp process exited with code ${code}`)
-            if (code !== 0) {
-              console.error(`yt-dlp exited with code ${code}: ${stderr}`)
-              reject(new Error(`yt-dlp process exited with code ${code}: ${stderr}`))
-              return
-            }
-            resolve()
-          })
-        })
-
-        // 파일이 존재하는지 확인
+        // 파일이 있는지 확인
         if (fs.existsSync(outputPath)) {
           const stats = fs.statSync(outputPath)
+          console.log(`File size: ${stats.size} bytes`)
+
           if (stats.size === 0) {
-            throw new Error('Downloaded file is empty')
+            fs.unlinkSync(outputPath)
+            return res.status(500).json({ error: 'Downloaded file is empty' })
           }
 
-          console.log('File exists, sending to client:', outputPath, 'Size:', stats.size)
+          // 다운로드 완료 후 ffmpeg로 오디오 검사 (선택사항)
+          try {
+            ffmpeg.ffprobe(outputPath, (err, metadata) => {
+              if (err) {
+                console.error('ffprobe error:', err)
+              } else {
+                // 오디오 스트림이 있는지 검사
+                const hasAudioStream = metadata.streams.some(
+                  (stream) => stream.codec_type === 'audio',
+                )
+                console.log(`File has audio stream: ${hasAudioStream}`)
 
-          res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp4`)
+                if (!hasAudioStream) {
+                  console.warn('Warning: Downloaded file does not have an audio stream')
+                }
+              }
+            })
+          } catch (probeErr) {
+            console.error('Error checking audio stream:', probeErr)
+          }
+
+          // 다운로드 완료 후 파일 스트리밍
           res.setHeader('Content-Type', 'video/mp4')
+          res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp4`)
+          res.setHeader('Content-Length', stats.size)
 
-          const stream = fs.createReadStream(outputPath)
-          stream.pipe(res)
+          const fileStream = fs.createReadStream(outputPath)
+          fileStream.pipe(res)
 
-          stream.on('end', () => {
-            // 임시 파일 삭제
+          // 파일 전송 완료 후 임시 파일 삭제
+          fileStream.on('end', () => {
             fs.unlink(outputPath, (err) => {
               if (err) console.error('Error deleting temp file:', err)
             })
           })
+
+          // 에러 처리
+          fileStream.on('error', (err) => {
+            console.error('File stream error:', err)
+            res.status(500).end()
+            fs.unlink(outputPath, () => {})
+          })
         } else {
-          throw new Error('Failed to download live stream - file not created')
+          res.status(500).json({ error: 'Downloaded file not found' })
         }
-        */
-      } catch (error) {
-        console.error('Live download error:', error)
-        res.status(500).json({
-          error: 'Failed to process live stream request',
-          details: error.message,
-        })
-      }
-    } else {
-      // 일반 비디오 다운로드 (기존 코드)
-      const info = await ytdl.getInfo(url)
-      const videoFormat = info.formats.find((f) => f.itag === itag)
-      const safeFilename = sanitizeFilename(info.videoDetails.title)
-
-      // 항상 최고 품질의 오디오를 가져옴
-      const audioFormat = ytdl.chooseFormat(info.formats, {
-        quality: 'highestaudio',
-        filter: 'audioonly',
       })
-
-      // 임시 파일 경로 설정
-      const tempVideoPath = path.join(downloadDir, `${safeFilename}_video.mp4`)
-      const tempAudioPath = path.join(downloadDir, `${safeFilename}_audio.mp3`)
-      const outputPath = path.join(downloadDir, `${safeFilename}_final.mp4`)
-
-      try {
-        // 비디오 다운로드
-        await new Promise((resolve, reject) => {
-          const video = ytdl(url, { format: videoFormat })
-          video.pipe(fs.createWriteStream(tempVideoPath)).on('finish', resolve).on('error', reject)
-        })
-
-        // 오디오 다운로드
-        await new Promise((resolve, reject) => {
-          const audio = ytdl(url, { format: audioFormat })
-          audio.pipe(fs.createWriteStream(tempAudioPath)).on('finish', resolve).on('error', reject)
-        })
-
-        // FFmpeg를 사용하여 비디오와 오디오 합치기
-        await new Promise((resolve, reject) => {
-          ffmpeg()
-            .input(tempVideoPath)
-            .input(tempAudioPath)
-            .outputOptions([
-              '-c:v copy',
-              '-c:a aac',
-              '-strict experimental',
-              '-map 0:v:0',
-              '-map 1:a:0',
-              '-shortest',
-            ])
-            .output(outputPath)
-            .on('end', resolve)
-            .on('error', (err) => {
-              console.error('FFmpeg Error:', err)
-              reject(err)
-            })
-            .run()
-        })
-
-        // 결과 파일 전송
-        res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp4`)
-        res.setHeader('Content-Type', 'video/mp4')
-
-        const stream = fs.createReadStream(outputPath)
-        stream.pipe(res)
-
-        // 스트림이 완료되면 임시 파일들 삭제
-        stream.on('end', () => {
-          fs.unlink(tempVideoPath, () => {})
-          fs.unlink(tempAudioPath, () => {})
-          fs.unlink(outputPath, () => {})
-        })
-      } catch (err) {
-        console.error('Processing Error:', err)
-        // 에러 발생 시 임시 파일 정리
-        fs.unlink(tempVideoPath, () => {})
-        fs.unlink(tempAudioPath, () => {})
-        fs.unlink(outputPath, () => {})
-        throw err
-      }
+    } catch (err) {
+      console.error('Download Error:', err)
+      res.status(500).json({ error: 'Failed to process download request' })
     }
   } catch (error) {
-    console.error('Download Error:', error)
-    res.status(500).json({
-      error: 'Download failed',
-      details: error.message,
-    })
+    console.error('Error in download endpoint:', error)
+    res.status(500).json({ error: 'Failed to process download request' })
   }
 })
 
@@ -461,68 +410,91 @@ app.post('/api/download/youtube/audio', async (req, res) => {
   try {
     const { url } = req.body
     if (!url) {
-      return res.status(400).json({ error: 'URL이 필요합니다' })
+      return res.status(400).json({ error: 'URL is required' })
     }
 
-    const info = await ytdl.getInfo(url)
-    const audioFormat = ytdl.chooseFormat(info.formats, {
-      quality: 'highestaudio',
-      filter: 'audioonly',
-    })
-
-    const safeFilename = sanitizeFilename(info.videoDetails.title)
-    const tempAudioPath = path.join(downloadDir, `${safeFilename}_audio.mp3`)
-    const outputPath = path.join(downloadDir, `${safeFilename}_final.mp3`)
+    // 임시 파일 저장 디렉토리 확인
+    if (!fs.existsSync(downloadDir)) {
+      fs.mkdirSync(downloadDir, { recursive: true })
+    }
 
     try {
-      // 오디오 다운로드
-      await new Promise((resolve, reject) => {
-        const audio = ytdl(url, { format: audioFormat })
-        audio.pipe(fs.createWriteStream(tempAudioPath)).on('finish', resolve).on('error', reject)
+      // 고유 ID 생성
+      const timestamp = Date.now()
+      const randomStr = Math.random().toString(36).substring(2, 8)
+      const safeFilename = `youtube_audio_${timestamp}_${randomStr}`
+      const outputPath = path.join(downloadDir, `${safeFilename}.mp3`)
+
+      // yt-dlp 명령어 구성 (오디오 품질 개선)
+      const command = `yt-dlp -f bestaudio --extract-audio --audio-format mp3 --audio-quality 0 --postprocessor-args "-ar 44100" -o "${outputPath}" "${url}"`
+      console.log('Executing audio command:', command)
+
+      // yt-dlp 실행
+      const { exec } = require('child_process')
+      const download = exec(command)
+
+      let stderr = ''
+      download.stderr.on('data', (data) => {
+        stderr += data.toString()
+        console.error(`yt-dlp stderr: ${data}`)
       })
 
-      // FFmpeg를 사용하여 MP3로 변환
-      await new Promise((resolve, reject) => {
-        ffmpeg()
-          .input(tempAudioPath)
-          .outputOptions([
-            '-c:a libmp3lame', // MP3 인코더 사용
-            '-q:a 0', // 최고 품질
-          ])
-          .output(outputPath)
-          .on('end', resolve)
-          .on('error', (err) => {
-            console.error('FFmpeg Error:', err)
-            reject(err)
+      let stdout = ''
+      download.stdout.on('data', (data) => {
+        stdout += data.toString()
+        console.log(`yt-dlp stdout: ${data}`)
+      })
+
+      download.on('close', (code) => {
+        console.log(`yt-dlp process exited with code ${code}`)
+
+        if (code !== 0) {
+          console.error('yt-dlp error details:', stderr)
+          return res.status(500).json({ error: 'Audio download failed', details: stderr })
+        }
+
+        // 파일이 있는지 확인
+        if (fs.existsSync(outputPath)) {
+          const stats = fs.statSync(outputPath)
+          console.log(`Audio file size: ${stats.size} bytes`)
+
+          if (stats.size === 0) {
+            fs.unlinkSync(outputPath)
+            return res.status(500).json({ error: 'Downloaded audio file is empty' })
+          }
+
+          // 다운로드 완료 후 파일 스트리밍
+          res.setHeader('Content-Type', 'audio/mp3')
+          res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp3`)
+          res.setHeader('Content-Length', stats.size)
+
+          const fileStream = fs.createReadStream(outputPath)
+          fileStream.pipe(res)
+
+          // 파일 전송 완료 후 임시 파일 삭제
+          fileStream.on('end', () => {
+            fs.unlink(outputPath, (err) => {
+              if (err) console.error('Error deleting temp audio file:', err)
+            })
           })
-          .run()
-      })
 
-      // 결과 파일 전송
-      res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp3`)
-      res.setHeader('Content-Type', 'audio/mp3')
-
-      const stream = fs.createReadStream(outputPath)
-      stream.pipe(res)
-
-      // 스트림이 완료되면 임시 파일들 삭제
-      stream.on('end', () => {
-        fs.unlink(tempAudioPath, () => {})
-        fs.unlink(outputPath, () => {})
+          // 에러 처리
+          fileStream.on('error', (err) => {
+            console.error('File stream error:', err)
+            res.status(500).end()
+            fs.unlink(outputPath, () => {})
+          })
+        } else {
+          res.status(500).json({ error: 'Downloaded audio file not found' })
+        }
       })
     } catch (err) {
-      console.error('Processing Error:', err)
-      // 에러 발생 시 임시 파일 정리
-      fs.unlink(tempAudioPath, () => {})
-      fs.unlink(outputPath, () => {})
-      throw err
+      console.error('Audio Download Error:', err)
+      res.status(500).json({ error: 'Failed to process audio download request' })
     }
   } catch (error) {
-    console.error('Download Error:', error)
-    res.status(500).json({
-      error: '오디오 다운로드 중 오류가 발생했습니다',
-      details: error.message,
-    })
+    console.error('Error in audio download endpoint:', error)
+    res.status(500).json({ error: 'Failed to process audio download request' })
   }
 })
 
@@ -1110,10 +1082,7 @@ app.post('/api/download/instagram/audio', async (req, res) => {
           .outputOptions(['-vn', '-acodec', 'libmp3lame', '-q:a', '0'])
           .output(outputPath)
           .on('end', resolve)
-          .on('error', (err) => {
-            console.error('FFmpeg Error:', err)
-            reject(err)
-          })
+          .on('error', reject)
           .run()
       })
 

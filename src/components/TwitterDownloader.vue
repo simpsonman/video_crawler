@@ -1,187 +1,146 @@
 <template>
   <div class="twitter-downloader">
-    <h2>X (Twitter) Video Downloader</h2>
-
-    <div class="input-container">
-      <el-input
+    <h2>Twitter Video Downloader</h2>
+    <div class="input-group">
+      <input
         v-model="url"
-        placeholder="Enter your X (Twitter) URL"
+        type="text"
+        placeholder="Enter Twitter URL"
         :disabled="loading"
-        size="large"
-        clearable
-      >
-        <template #prefix>
-          <el-icon><VideoCamera /></el-icon>
-        </template>
-      </el-input>
-
-      <el-button type="primary" @click="getVideoInfo" :loading="loading" size="large">
-        Get information
-      </el-button>
+        @keyup.enter="getVideoInfo"
+      />
+      <button @click="getVideoInfo" :disabled="loading" class="info-button">Get Information</button>
     </div>
 
-    <!-- 비디오 정보 표시 -->
+    <div v-if="error" class="error">{{ error }}</div>
+
     <div v-if="videoInfo" class="video-info">
-      <!-- <img :src="videoInfo.thumbnail" alt="썸네일" class="thumbnail" /> -->
-
-      <div class="download-options">
-        <!-- 비디오 다운로드 옵션 -->
+      <img :src="videoInfo.thumbnail" alt="Thumbnail" class="thumbnail" />
+      <div class="info-text">
+        <h3>Twitter Content</h3>
+        <h2>{{ videoInfo.title || 'Twitter Video' }}</h2>
         <div class="format-selector">
-          <el-select v-model="selectedFormat" placeholder="Select a resolution" size="large">
-            <el-option
-              v-for="format in videoInfo.formats"
-              :key="format.quality"
-              :label="format.quality"
-              :value="format.url"
-            />
-          </el-select>
-
-          <el-button type="success" @click="handleDownload" :loading="downloading" size="large">
-            Download the video
-          </el-button>
+          <label for="format">Select Format:</label>
+          <select v-model="selectedFormat" id="format">
+            <option v-for="format in videoInfo.formats" :key="format.url" :value="format">
+              {{ formatLabel(format) }}
+            </option>
+          </select>
         </div>
-
-        <!-- 오디오 다운로드 버튼 -->
-        <!-- <div class="audio-download">
-          <el-button
-            type="primary"
-            @click="handleAudioDownload"
-            :loading="downloadingAudio"
-            size="large"
-          >
-            오디오만 다운로드 (MP3)
-          </el-button>
-        </div> -->
+        <button @click="handleDownload" :disabled="downloading" class="download-button">
+          Download Video
+        </button>
       </div>
     </div>
 
-    <div v-if="error" class="error-message">
-      {{ error }}
-    </div>
-
-    <!-- 로딩 팝업 추가 -->
     <LoadingPopup
       :visible="showLoadingPopup"
       :title="loadingTitle"
       :message="loadingMessage"
       :progress="loadingProgress"
-      :showCancelButton="loadingCancelable"
-      @cancel="handleCancelLoading"
+      :cancelable="loadingCancelable"
+      @cancel="handleCancel"
     />
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { VideoCamera } from '@element-plus/icons-vue'
+import { ref, computed } from 'vue'
 import axios from 'axios'
 import LoadingPopup from './LoadingPopup.vue'
 
 const url = ref('')
 const loading = ref(false)
 const downloading = ref(false)
-const downloadingAudio = ref(false)
 const error = ref('')
 const videoInfo = ref(null)
 const selectedFormat = ref(null)
 
-// 로딩 팝업 상태 관리
+// Loading popup state
 const showLoadingPopup = ref(false)
 const loadingTitle = ref('Processing...')
 const loadingMessage = ref('Please wait a moment')
 const loadingProgress = ref(0)
 const loadingCancelable = ref(true)
-
-// 진행 상태 인터벌 ID
 let progressInterval = null
 
-// 진행 상태 시뮬레이션 시작
-const startProgressSimulation = (action) => {
-  showLoadingPopup.value = true
-  loadingProgress.value = 0
-
-  if (action === 'info') {
-    loadingTitle.value = 'X (Twitter) Video Information'
-    loadingMessage.value = 'Getting video information from X...'
-    // 정보 가져오기는 빠르게 진행
-    simulateProgress(80, 300)
-  } else if (action === 'video') {
-    loadingTitle.value = 'Video Download'
-    loadingMessage.value = 'Downloading video from X...'
-    // 비디오 다운로드는 천천히 진행
-    simulateProgress(95, 400)
-  } else if (action === 'audio') {
-    loadingTitle.value = 'Audio Download'
-    loadingMessage.value = 'Extracting audio from X...'
-    // 오디오 다운로드는 중간 속도로 진행
-    simulateProgress(90, 350)
-  }
-}
-
-// 진행 상태 시뮬레이션
-const simulateProgress = (targetProgress, interval) => {
+// Progress simulation function
+const simulateProgress = (startValue, endValue, duration) => {
   clearInterval(progressInterval)
+  loadingProgress.value = startValue
 
+  const step = (endValue - startValue) / (duration / 100)
   progressInterval = setInterval(() => {
-    if (loadingProgress.value < targetProgress) {
-      loadingProgress.value += 1
-    } else {
+    loadingProgress.value += step
+    if (loadingProgress.value >= endValue) {
+      loadingProgress.value = endValue
       clearInterval(progressInterval)
     }
-  }, interval)
+  }, 100)
 }
 
-// 로딩 완료 처리
-const completeLoading = (success = true) => {
+// Loading completion handler
+const completeLoading = () => {
   clearInterval(progressInterval)
-
-  if (success) {
-    loadingProgress.value = 100
-    setTimeout(() => {
-      showLoadingPopup.value = false
-      loadingProgress.value = 0
-    }, 500)
-  } else {
+  loadingProgress.value = 100
+  setTimeout(() => {
     showLoadingPopup.value = false
     loadingProgress.value = 0
+  }, 500)
+}
+
+// Cancel handler
+const handleCancel = () => {
+  clearInterval(progressInterval)
+  loadingProgress.value = 0
+  showLoadingPopup.value = false
+
+  if (loading.value) {
+    loading.value = false
+  }
+
+  if (downloading.value) {
+    downloading.value = false
   }
 }
 
-// 로딩 취소 처리
-const handleCancelLoading = () => {
-  showLoadingPopup.value = false
-  clearInterval(progressInterval)
-  loadingProgress.value = 0
-  loading.value = false
-  downloading.value = false
-  downloadingAudio.value = false
+const formatLabel = (format) => {
+  if (!format) return 'Unknown'
+  return `${format.height}p (${Math.round((format.filesize / 1024 / 1024) * 100) / 100} MB)`
 }
 
 const getVideoInfo = async () => {
   if (!url.value) {
-    error.value = 'Enter your X (Twitter) URL'
+    error.value = 'Please enter a URL'
     return
   }
 
-  loading.value = true
-  error.value = ''
-
-  // 로딩 팝업 표시
-  startProgressSimulation('info')
-
   try {
+    error.value = ''
+    loading.value = true
+    videoInfo.value = null
+
+    // Show loading popup
+    showLoadingPopup.value = true
+    loadingTitle.value = 'Getting Twitter Content Information'
+    loadingMessage.value = 'Loading content information from Twitter...'
+    loadingCancelable.value = true
+    simulateProgress(0, 90, 3000)
+
     const response = await axios.post('/api/twitter/info', { url: url.value })
     videoInfo.value = response.data
-    selectedFormat.value = videoInfo.value.formats[0]?.url // 최고 품질 기본 선택
 
-    // 로딩 완료
-    completeLoading(true)
+    if (videoInfo.value && videoInfo.value.formats && videoInfo.value.formats.length > 0) {
+      // Select highest resolution format by default
+      const sortedFormats = [...videoInfo.value.formats].sort((a, b) => b.height - a.height)
+      selectedFormat.value = sortedFormats[0]
+    }
+
+    completeLoading()
   } catch (err) {
-    console.error('Error:', err)
-    error.value = 'Failed to get video information'
-
-    // 로딩 실패
-    completeLoading(false)
+    error.value =
+      'Failed to retrieve video information: ' + (err.response?.data?.error || err.message)
+    showLoadingPopup.value = false
   } finally {
     loading.value = false
   }
@@ -189,102 +148,45 @@ const getVideoInfo = async () => {
 
 const handleDownload = async () => {
   if (!selectedFormat.value) {
-    error.value = 'Select a resolution'
+    error.value = 'Please select a resolution'
     return
   }
 
-  downloading.value = true
-  error.value = ''
-
-  // 로딩 팝업 표시
-  startProgressSimulation('video')
-
   try {
-    const response = await axios.post(
-      '/api/download/twitter',
-      {
-        url: url.value,
-        videoUrl: selectedFormat.value,
-      },
-      {
-        responseType: 'blob',
-      },
-    )
+    error.value = ''
+    downloading.value = true
 
-    // 다운로드 완료 표시
-    loadingProgress.value = 100
-    loadingMessage.value = 'Download completed! Please save the file...'
+    // Show loading popup
+    showLoadingPopup.value = true
+    loadingTitle.value = 'Video Download'
+    loadingMessage.value = 'Downloading video from Twitter...'
+    loadingCancelable.value = false
+    simulateProgress(0, 95, 5000)
 
-    setTimeout(() => {
-      const blob = new Blob([response.data], { type: 'video/mp4' })
-      const downloadUrl = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = downloadUrl
-      link.download = 'twitter_video.mp4'
-      document.body.appendChild(link)
-      link.click()
-      window.URL.revokeObjectURL(downloadUrl)
-      document.body.removeChild(link)
+    const response = await axios({
+      url: selectedFormat.value.url,
+      method: 'GET',
+      responseType: 'blob',
+    })
 
-      // 로딩 완료
-      completeLoading(true)
-    }, 500)
+    const blob = new Blob([response.data], { type: 'video/mp4' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.style.display = 'none'
+    a.href = url
+    a.download = `twitter_video_${Date.now()}.mp4`
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+
+    loadingMessage.value = 'Download complete! Saving file...'
+
+    completeLoading()
   } catch (err) {
-    console.error('Download error:', err)
-    error.value = 'An error occurred during download'
-
-    // 로딩 실패
-    completeLoading(false)
+    error.value = 'An error occurred during download: ' + (err.response?.data?.error || err.message)
+    showLoadingPopup.value = false
   } finally {
     downloading.value = false
-  }
-}
-
-const handleAudioDownload = async () => {
-  if (!url.value) {
-    error.value = 'Enter your X (Twitter) URL'
-    return
-  }
-
-  downloadingAudio.value = true
-  error.value = ''
-
-  // 로딩 팝업 표시
-  startProgressSimulation('audio')
-
-  try {
-    const response = await axios.post(
-      '/api/download/twitter/audio',
-      { url: url.value },
-      { responseType: 'blob' },
-    )
-
-    // 다운로드 완료 표시
-    loadingProgress.value = 100
-    loadingMessage.value = 'Download completed! Please save the file...'
-
-    setTimeout(() => {
-      const blob = new Blob([response.data], { type: 'audio/mp3' })
-      const downloadUrl = window.URL.createObjectURL(blob)
-      const link = document.createElement('a')
-      link.href = downloadUrl
-      link.download = 'twitter_audio.mp3'
-      document.body.appendChild(link)
-      link.click()
-      window.URL.revokeObjectURL(downloadUrl)
-      document.body.removeChild(link)
-
-      // 로딩 완료
-      completeLoading(true)
-    }, 500)
-  } catch (err) {
-    console.error('Audio download error:', err)
-    error.value = 'An error occurred during audio download'
-
-    // 로딩 실패
-    completeLoading(false)
-  } finally {
-    downloadingAudio.value = false
   }
 }
 </script>
