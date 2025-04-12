@@ -7,9 +7,9 @@
       <!-- <el-tab-pane label="Instagram" name="instagram">
         <instagram-downloader />
       </el-tab-pane> -->
-      <!-- <el-tab-pane label="X (Twitter)" name="twitter">
+      <el-tab-pane label="X (Twitter)" name="twitter">
         <twitter-downloader />
-      </el-tab-pane> -->
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
