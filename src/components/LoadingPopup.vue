@@ -10,8 +10,17 @@
         </div>
         <div class="progress-text">{{ progress }}%</div>
 
-        <div v-if="showCancelButton" class="action-buttons">
-          <el-button type="danger" @click="onCancel">Cancel</el-button>
+        <div v-if="speedInfo || etaInfo" class="download-info">
+          <div v-if="speedInfo" class="speed-info">
+            <span>Speed: {{ speedInfo }}</span>
+          </div>
+          <div v-if="etaInfo" class="eta-info">
+            <span>ETA: {{ etaInfo }}</span>
+          </div>
+        </div>
+
+        <div v-if="cancelable" class="action-buttons">
+          <button @click="onCancel" class="cancel-button">Cancel</button>
         </div>
       </div>
 
@@ -46,7 +55,15 @@ const props = defineProps({
     type: Number,
     default: 0,
   },
-  showCancelButton: {
+  speedInfo: {
+    type: String,
+    default: '',
+  },
+  etaInfo: {
+    type: String,
+    default: '',
+  },
+  cancelable: {
     type: Boolean,
     default: true,
   },
@@ -98,10 +115,10 @@ p {
 }
 
 .progress-container {
-  height: 10px;
-  background-color: #ebeef5;
-  border-radius: 5px;
-  margin: 16px 0 8px;
+  margin-top: 16px;
+  height: 8px;
+  background-color: #e4e7ed;
+  border-radius: 4px;
   overflow: hidden;
 }
 
@@ -112,33 +129,53 @@ p {
 }
 
 .progress-text {
+  margin-top: 8px;
   text-align: right;
-  font-size: 12px;
-  color: #909399;
-  margin-bottom: 16px;
+  font-size: 14px;
+  color: #606266;
+}
+
+.download-info {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 14px;
+  color: #606266;
 }
 
 .action-buttons {
+  margin-top: 16px;
   display: flex;
   justify-content: flex-end;
-  margin-top: 16px;
+}
+
+.cancel-button {
+  padding: 8px 16px;
+  background-color: #f56c6c;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.cancel-button:hover {
+  background-color: #e64242;
 }
 
 .ad-container {
-  padding: 16px;
   background-color: #f5f7fa;
-  border-top: 1px solid #ebeef5;
+  padding: 16px;
+  text-align: center;
+  border-top: 1px solid #e4e7ed;
 }
 
 .ad-placeholder {
-  height: 100px;
+  height: 90px;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  border: 1px dashed #dcdfe6;
-  border-radius: 4px;
-  background-color: white;
   color: #909399;
 }
 

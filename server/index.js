@@ -278,6 +278,9 @@ app.post('/api/youtube/info', async (req, res) => {
   }
 })
 
+// yt-dlp 다운로드 진행 상황 이벤트 저장용 객체
+const downloadProgress = {}
+
 // 다운로드 엔드포인트 수정
 app.post('/api/download/youtube', async (req, res) => {
   try {
@@ -293,50 +296,165 @@ app.post('/api/download/youtube', async (req, res) => {
       fs.mkdirSync(downloadDir, { recursive: true })
     }
 
+    // 세션 ID 생성
+    const sessionId = Date.now().toString()
+    downloadProgress[sessionId] = {
+      progress: 0,
+      status: 'starting',
+      eta: '',
+      speed: '',
+      total: '',
+      message: 'Preparing download...',
+    }
+
+    // 간단한 고유 ID 생성
+    const timestamp = Date.now()
+    const randomStr = Math.random().toString(36).substring(2, 8)
+    const safeFilename = `youtube_${timestamp}_${randomStr}`
+    const outputPath = path.join(downloadDir, `${safeFilename}.mp4`)
+
+    // yt-dlp 명령어 구성 (비디오와 오디오 모두 다운로드하도록 수정)
+    let formatOptions = ''
+
+    if (itag && itag !== 'best') {
+      // 특정 itag가 지정된 경우 해당 포맷 사용
+      formatOptions = `-f ${itag}+bestaudio/best`
+    } else {
+      // 기본: 최고 품질 비디오 + 최고 품질 오디오
+      formatOptions = '-f bestvideo+bestaudio/best'
+    }
+
     try {
-      // 간단한 고유 ID 생성
-      const timestamp = Date.now()
-      const randomStr = Math.random().toString(36).substring(2, 8)
-      const safeFilename = `youtube_${timestamp}_${randomStr}`
-      const outputPath = path.join(downloadDir, `${safeFilename}.mp4`)
-
-      // yt-dlp 명령어 구성 (비디오와 오디오 모두 다운로드하도록 수정)
-      let formatOptions = ''
-
-      if (itag && itag !== 'best') {
-        // 특정 itag가 지정된 경우 해당 포맷 사용
-        formatOptions = `-f ${itag}+bestaudio/best`
-      } else {
-        // 기본: 최고 품질 비디오 + 최고 품질 오디오
-        formatOptions = '-f bestvideo+bestaudio/best'
-      }
-
       // 최종 명령어: 오디오를 확실하게 포함하고, 오디오 코덱 지정
-      const command = `yt-dlp ${formatOptions} --merge-output-format mp4 --audio-quality 0 -o "${outputPath}" "${url}"`
+      // 문제 발생 가능성이 있는 옵션 제거하고 안정성 향상
+      const command = `yt-dlp ${formatOptions} --merge-output-format mp4 --no-progress --no-warnings --no-check-certificate -o "${outputPath}" "${url}"`
       console.log('Executing command:', command)
 
-      // yt-dlp 실행
-      const { exec } = require('child_process')
-      const download = exec(command)
+      // 파일이 이미 존재하는 경우 삭제
+      if (fs.existsSync(outputPath)) {
+        fs.unlinkSync(outputPath)
+        console.log(`Removed existing file: ${outputPath}`)
+      }
+
+      // 명령어 실행 방식 변경: spawn 사용
+      const { spawn } = require('child_process')
+
+      // 명령어와 인자 분리
+      const parts = command.split(' ')
+      const cmd = parts[0]
+      const args = parts.slice(1).filter((arg) => arg !== '')
+
+      // 인자에서 큰따옴표 제거
+      const cleanArgs = args.map((arg) => {
+        if (arg.startsWith('"') && arg.endsWith('"')) {
+          return arg.substring(1, arg.length - 1)
+        }
+        return arg
+      })
+
+      console.log('Executing command with spawn:', cmd, cleanArgs)
+
+      const download = spawn(cmd, cleanArgs, {
+        shell: true, // Windows에서 작동하도록 shell 옵션 추가
+        windowsHide: true,
+      })
 
       let stderr = ''
       download.stderr.on('data', (data) => {
-        stderr += data.toString()
-        console.error(`yt-dlp stderr: ${data}`)
+        const output = data.toString()
+        stderr += output
+        console.error(`yt-dlp stderr: ${output}`)
       })
 
       let stdout = ''
       download.stdout.on('data', (data) => {
-        stdout += data.toString()
-        console.log(`yt-dlp stdout: ${data}`)
+        const output = data.toString()
+        stdout += output
+        console.log(`yt-dlp stdout: ${output}`)
+
+        // 다운로드 진행 상황 파싱
+        const progressLine = output
+
+        // 다운로드 진행률 파싱 (예: [download]  14.3% of ~   3.36GiB at    1.80MiB/s ETA 26:32)
+        const progressMatch = progressLine.match(
+          /\[download\]\s+(\d+\.\d+)% of ~?\s+(.+) at\s+(.+) ETA (.+)/,
+        )
+        if (progressMatch) {
+          const percentage = parseFloat(progressMatch[1])
+          const total = progressMatch[2]
+          const speed = progressMatch[3]
+          const eta = progressMatch[4]
+
+          downloadProgress[sessionId] = {
+            progress: percentage,
+            status: 'downloading',
+            total: total,
+            speed: speed,
+            eta: eta,
+            message: `Downloading: ${percentage.toFixed(1)}% (${speed}, ETA: ${eta})`,
+          }
+        }
+
+        // 합치기 작업 파싱
+        if (progressLine.includes('Merging formats')) {
+          downloadProgress[sessionId] = {
+            progress: 95,
+            status: 'merging',
+            message: 'Merging video & audio...',
+          }
+        }
+
+        // 완료 메시지 파싱
+        if (
+          progressLine.includes('has already been downloaded') ||
+          progressLine.includes('Deleting original file') ||
+          progressLine.includes('ffmpeg -y')
+        ) {
+          downloadProgress[sessionId] = {
+            progress: 100,
+            status: 'complete',
+            message: 'Download complete!',
+          }
+        }
       })
 
-      download.on('close', (code) => {
+      download.on('error', (error) => {
+        console.error('Download process error:', error)
+        downloadProgress[sessionId] = {
+          progress: 0,
+          status: 'error',
+          message: `Process error: ${error.message}`,
+        }
+
+        // 오류 발생 시 응답 처리
+        if (!res.headersSent) {
+          return res.status(500).json({ error: 'Download process error', details: error.message })
+        }
+      })
+
+      download.on('close', async (code) => {
         console.log(`yt-dlp process exited with code ${code}`)
 
         if (code !== 0) {
           console.error('yt-dlp error details:', stderr)
-          return res.status(500).json({ error: 'Download failed', details: stderr })
+          downloadProgress[sessionId] = {
+            progress: 0,
+            status: 'error',
+            message: `Download failed with code ${code}`,
+          }
+
+          // 오류 발생 시 응답 처리 (응답 헤더가 아직 전송되지 않은 경우에만)
+          if (!res.headersSent) {
+            return res.status(500).json({ error: 'Download failed', details: stderr })
+          }
+          return
+        }
+
+        // 다운로드 완료 상태 업데이트
+        downloadProgress[sessionId] = {
+          progress: 100,
+          status: 'complete',
+          message: 'Download complete!',
         }
 
         // 파일이 있는지 확인
@@ -346,62 +464,93 @@ app.post('/api/download/youtube', async (req, res) => {
 
           if (stats.size === 0) {
             fs.unlinkSync(outputPath)
-            return res.status(500).json({ error: 'Downloaded file is empty' })
+
+            // 응답 헤더가 아직 전송되지 않은 경우에만 오류 응답 전송
+            if (!res.headersSent) {
+              return res.status(500).json({ error: 'Downloaded file is empty' })
+            }
+            return
           }
 
-          // 다운로드 완료 후 ffmpeg로 오디오 검사 (선택사항)
-          try {
-            ffmpeg.ffprobe(outputPath, (err, metadata) => {
-              if (err) {
-                console.error('ffprobe error:', err)
-              } else {
-                // 오디오 스트림이 있는지 검사
-                const hasAudioStream = metadata.streams.some(
-                  (stream) => stream.codec_type === 'audio',
-                )
-                console.log(`File has audio stream: ${hasAudioStream}`)
+          // 다운로드 완료 후 파일 스트리밍 (응답 헤더가 아직 전송되지 않은 경우에만)
+          if (!res.headersSent) {
+            res.setHeader('Content-Type', 'video/mp4')
+            res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp4`)
+            res.setHeader('Content-Length', stats.size)
+            res.setHeader('X-Download-Session-Id', sessionId)
 
-                if (!hasAudioStream) {
-                  console.warn('Warning: Downloaded file does not have an audio stream')
-                }
+            const fileStream = fs.createReadStream(outputPath)
+            fileStream.pipe(res)
+
+            // 파일 전송 완료 후 임시 파일 삭제
+            fileStream.on('end', () => {
+              try {
+                fs.unlinkSync(outputPath)
+                console.log(`Successfully deleted temporary file: ${outputPath}`)
+              } catch (err) {
+                console.error('Error deleting temp file:', err)
               }
+
+              // 세션 정보 삭제
+              delete downloadProgress[sessionId]
             })
-          } catch (probeErr) {
-            console.error('Error checking audio stream:', probeErr)
+
+            // 에러 처리
+            fileStream.on('error', (err) => {
+              console.error('File stream error:', err)
+              if (!res.writableEnded) {
+                res.status(500).end()
+              }
+
+              try {
+                fs.unlinkSync(outputPath)
+              } catch (unlinkErr) {
+                console.error('Error while deleting file after stream error:', unlinkErr)
+              }
+
+              // 세션 정보 삭제
+              delete downloadProgress[sessionId]
+            })
+          }
+        } else {
+          // 응답 헤더가 아직 전송되지 않은 경우에만 오류 응답 전송
+          if (!res.headersSent) {
+            res.status(500).json({ error: 'Downloaded file not found' })
           }
 
-          // 다운로드 완료 후 파일 스트리밍
-          res.setHeader('Content-Type', 'video/mp4')
-          res.setHeader('Content-Disposition', `attachment; filename=${safeFilename}.mp4`)
-          res.setHeader('Content-Length', stats.size)
-
-          const fileStream = fs.createReadStream(outputPath)
-          fileStream.pipe(res)
-
-          // 파일 전송 완료 후 임시 파일 삭제
-          fileStream.on('end', () => {
-            fs.unlink(outputPath, (err) => {
-              if (err) console.error('Error deleting temp file:', err)
-            })
-          })
-
-          // 에러 처리
-          fileStream.on('error', (err) => {
-            console.error('File stream error:', err)
-            res.status(500).end()
-            fs.unlink(outputPath, () => {})
-          })
-        } else {
-          res.status(500).json({ error: 'Downloaded file not found' })
+          // 세션 정보 삭제
+          delete downloadProgress[sessionId]
         }
       })
     } catch (err) {
       console.error('Download Error:', err)
-      res.status(500).json({ error: 'Failed to process download request' })
+
+      // 응답 헤더가 아직 전송되지 않은 경우에만 오류 응답 전송
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to process download request', details: err.message })
+      }
+
+      // 세션 정보 삭제
+      delete downloadProgress[sessionId]
     }
   } catch (error) {
     console.error('Error in download endpoint:', error)
-    res.status(500).json({ error: 'Failed to process download request' })
+
+    // 응답 헤더가 아직 전송되지 않은 경우에만 오류 응답 전송
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to process download request', details: error.message })
+    }
+  }
+})
+
+// 다운로드 진행 상황 조회 API 엔드포인트 추가
+app.get('/api/download/progress/:sessionId', (req, res) => {
+  const { sessionId } = req.params
+
+  if (downloadProgress[sessionId]) {
+    res.json(downloadProgress[sessionId])
+  } else {
+    res.status(404).json({ error: 'Download session not found' })
   }
 })
 
@@ -497,9 +646,6 @@ app.post('/api/download/youtube/audio', async (req, res) => {
     res.status(500).json({ error: 'Failed to process audio download request' })
   }
 })
-
-// sleep 함수 추가
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // Instagram 비디오 URL 추출 함수 수정
 async function getInstagramVideoUrl(url) {

@@ -88,7 +88,9 @@
       :title="loadingTitle"
       :message="loadingMessage"
       :progress="loadingProgress"
-      :showCancelButton="loadingCancelable"
+      :cancelable="loadingCancelable"
+      :speedInfo="downloadSpeedInfo"
+      :etaInfo="downloadEtaInfo"
       @cancel="handleCancelLoading"
     />
   </div>
@@ -107,6 +109,10 @@ const downloadingAudio = ref(false)
 const error = ref('')
 const videoInfo = ref(null)
 const selectedFormat = ref(null)
+const downloadSessionId = ref(null)
+const isRealProgress = ref(false)
+const downloadSpeedInfo = ref('')
+const downloadEtaInfo = ref('')
 
 // 로딩 팝업 상태 관리
 const showLoadingPopup = ref(false)
@@ -117,11 +123,13 @@ const loadingCancelable = ref(true)
 
 // 진행 상태 인터벌 ID
 let progressInterval = null
+let progressCheckInterval = null
 
 // 진행 상태 시뮬레이션 시작
 const startProgressSimulation = (action) => {
   showLoadingPopup.value = true
   loadingProgress.value = 0
+  isRealProgress.value = false
 
   if (action === 'info') {
     loadingTitle.value = 'Get video information'
@@ -130,9 +138,9 @@ const startProgressSimulation = (action) => {
     simulateProgress(80, 300)
   } else if (action === 'video') {
     loadingTitle.value = 'Downloading video'
-    loadingMessage.value = 'Downloading video from YouTube...'
+    loadingMessage.value = 'Preparing to download video from YouTube...'
     // 비디오 다운로드는 천천히 진행
-    simulateProgress(95, 500)
+    simulateProgress(30, 500)
   } else if (action === 'audio') {
     loadingTitle.value = 'Audio download'
     loadingMessage.value = 'Extracting audio from YouTube...'
@@ -154,19 +162,92 @@ const simulateProgress = (targetProgress, interval) => {
   }, interval)
 }
 
+// 실제 다운로드 진행 상태 체크 시작
+const startProgressCheck = (sessionId) => {
+  downloadSessionId.value = sessionId
+  isRealProgress.value = true
+  clearInterval(progressCheckInterval)
+
+  // 로딩 메시지 초기화
+  loadingProgress.value = 0
+  loadingMessage.value = 'Starting download...'
+  downloadSpeedInfo.value = ''
+  downloadEtaInfo.value = ''
+
+  // 정기적으로 진행 상황 요청
+  progressCheckInterval = setInterval(async () => {
+    try {
+      const response = await axios.get(`/api/download/progress/${sessionId}`)
+      const progressData = response.data
+
+      // 진행 상태 업데이트
+      loadingProgress.value = progressData.progress || 0
+
+      // 다운로드 속도 및 예상 시간 업데이트
+      if (progressData.speed) {
+        downloadSpeedInfo.value = progressData.speed
+      }
+
+      if (progressData.eta) {
+        downloadEtaInfo.value = progressData.eta
+      }
+
+      // 메시지 업데이트
+      if (progressData.message) {
+        loadingMessage.value = progressData.message
+      } else if (progressData.status === 'downloading') {
+        loadingMessage.value = `Downloading: ${progressData.progress.toFixed(1)}%`
+      } else if (progressData.status === 'merging') {
+        loadingMessage.value = 'Merging video and audio tracks...'
+        loadingProgress.value = 95
+        downloadSpeedInfo.value = ''
+        downloadEtaInfo.value = ''
+      } else if (progressData.status === 'complete') {
+        loadingMessage.value = 'Download completed!'
+        loadingProgress.value = 100
+        downloadSpeedInfo.value = ''
+        downloadEtaInfo.value = ''
+      } else if (progressData.status === 'error') {
+        loadingMessage.value = 'Error: ' + (progressData.message || 'Download failed')
+        downloadSpeedInfo.value = ''
+        downloadEtaInfo.value = ''
+        clearInterval(progressCheckInterval)
+      }
+
+      // 진행이 완료되면 체크 중지
+      if (progressData.status === 'complete' || progressData.progress >= 100) {
+        clearInterval(progressCheckInterval)
+      }
+    } catch (err) {
+      console.error('Failed to fetch progress:', err)
+      // 5번 연속 오류 발생 시 체크 중지 로직을 추가할 수도 있음
+    }
+  }, 1000) // 1초마다 체크
+}
+
 // 로딩 완료 처리
 const completeLoading = (success = true) => {
+  // 모든 진행 상태 체크 중지
   clearInterval(progressInterval)
+  clearInterval(progressCheckInterval)
+
+  // 다운로드 정보 초기화
+  downloadSpeedInfo.value = ''
+  downloadEtaInfo.value = ''
 
   if (success) {
     loadingProgress.value = 100
     setTimeout(() => {
       showLoadingPopup.value = false
       loadingProgress.value = 0
+      isRealProgress.value = false
+      downloadSessionId.value = null
     }, 500)
   } else {
     showLoadingPopup.value = false
     loadingProgress.value = 0
+    isRealProgress.value = false
+    downloadSessionId.value = null
   }
 }
 
@@ -174,10 +255,13 @@ const completeLoading = (success = true) => {
 const handleCancelLoading = () => {
   showLoadingPopup.value = false
   clearInterval(progressInterval)
+  clearInterval(progressCheckInterval)
   loadingProgress.value = 0
   loading.value = false
   downloading.value = false
   downloadingAudio.value = false
+  isRealProgress.value = false
+  downloadSessionId.value = null
 }
 
 // 라이브 스트리밍 여부 확인
@@ -239,14 +323,7 @@ const getVideoInfo = async () => {
 
 const handleDownload = async () => {
   if (!selectedFormat.value) {
-    error.value = 'Please select a resolution'
-    return
-  }
-
-  // 라이브 스트리밍 체크 추가
-  if (isLiveStream.value) {
-    error.value = 'Live stream downloads are only available for premium subscribers'
-    showPremiumInfo()
+    error.value = 'Please select a format'
     return
   }
 
@@ -257,7 +334,8 @@ const handleDownload = async () => {
   startProgressSimulation('video')
 
   try {
-    const response = await axios.post(
+    // 먼저 다운로드 세션 생성 요청 (추가)
+    const downloadResponse = await axios.post(
       '/api/download/youtube',
       {
         url: url.value,
@@ -265,28 +343,77 @@ const handleDownload = async () => {
       },
       {
         responseType: 'blob',
+        timeout: 3600000, // 1시간 타임아웃 설정 (긴 비디오 대응)
+        onDownloadProgress: (progressEvent) => {
+          // 다운로드 진행 상황 직접 받기 시도
+          // 다운로드 큰 파일의 경우 진행 상황이 뒤늦게 바로 100%로 표시될 수 있음
+          if (progressEvent.lengthComputable) {
+            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total)
+            if (!isRealProgress.value) {
+              loadingProgress.value = Math.min(95, percentCompleted)
+            }
+          }
+        },
       },
     )
+
+    // 서버에서 응답 헤더로 세션 ID를 보낸 경우 실시간 진행 상황 체크 시작
+    const sessionId = downloadResponse.headers['x-download-session-id']
+    if (sessionId) {
+      startProgressCheck(sessionId)
+    }
 
     // 다운로드 완료 표시
     loadingProgress.value = 100
     loadingMessage.value = 'Download completed! Please save the file...'
 
-    setTimeout(() => {
-      if (!response.data) {
-        throw new Error('No data received from server')
-      }
+    // 오류 확인: 응답이 Blob 타입이 아니거나 비어있는 경우
+    if (
+      !downloadResponse.data ||
+      !(downloadResponse.data instanceof Blob) ||
+      downloadResponse.data.size === 0
+    ) {
+      throw new Error('Invalid response data received from server')
+    }
 
-      const blob = new Blob([response.data], { type: 'video/mp4' })
+    // Content-Type 확인: JSON 오류 메시지가 포함되어 있는지
+    const contentType = downloadResponse.headers['content-type']
+    if (contentType && contentType.includes('application/json')) {
+      // JSON 오류 메시지 추출
+      const reader = new FileReader()
+      const errorJsonPromise = new Promise((resolve, reject) => {
+        reader.onload = () => resolve(reader.result)
+        reader.onerror = () => reject(new Error('Error reading error response'))
+        reader.readAsText(downloadResponse.data)
+      })
+
+      const errorJson = await errorJsonPromise
+      try {
+        const errorObj = JSON.parse(errorJson)
+        throw new Error(errorObj.error || 'Unknown server error')
+      } catch (jsonParseError) {
+        throw new Error('Server returned an error')
+      }
+    }
+
+    setTimeout(() => {
+      // 파일 다운로드 처리
+      const blob = new Blob([downloadResponse.data], { type: 'video/mp4' })
       const downloadUrl = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = downloadUrl
 
       // 파일명 설정 (안전하게 처리)
-      const safeTitle = videoInfo.value?.title || 'youtube_video'
-      const fileName = isLiveStream.value ? `${safeTitle}_segment.mp4` : `${safeTitle}.mp4`
+      const contentDisposition = downloadResponse.headers['content-disposition']
+      let filename = 'youtube_video.mp4'
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/)
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1]
+        }
+      }
 
-      link.download = fileName
+      link.download = filename
       document.body.appendChild(link)
       link.click()
       window.URL.revokeObjectURL(downloadUrl)
@@ -297,7 +424,23 @@ const handleDownload = async () => {
     }, 500)
   } catch (err) {
     console.error('Download error:', err)
-    error.value = 'An error occurred during download'
+
+    // 더 자세한 오류 메시지 표시
+    if (err.response) {
+      // 서버 응답이 있는 경우
+      const status = err.response.status
+      const serverError = err.response.data?.error || err.response.statusText
+      const details = err.response.data?.details ? `: ${err.response.data.details}` : ''
+
+      error.value = `Server error (${status}): ${serverError}${details}`
+    } else if (err.request) {
+      // 요청은 보냈지만 응답이 없는 경우 (네트워크 오류)
+      error.value =
+        'Network error: The server did not respond. Please check your internet connection.'
+    } else {
+      // 요청 설정 중 에러 발생
+      error.value = `Error: ${err.message}`
+    }
 
     // 로딩 실패
     completeLoading(false)
