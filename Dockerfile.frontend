@@ -1,38 +1,28 @@
-# 빌드 단계
-FROM node:18.17-alpine AS builder
+# 1. Node.js 버전을 20으로 업그레이드
+FROM node:20 AS builder
 
 WORKDIR /app
 
-# 의존성 먼저 복사 및 설치 (캐싱 효율화)
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm install
 
-# 소스 파일 복사
 COPY src ./src
 COPY public ./public
 COPY vite.config.js ./
 COPY index.html ./
 
-# 프로덕션용 빌드
+
 RUN npm run build
 
-# 실행 단계
-FROM node:18.17-alpine
+FROM node:20
 
-WORKDIR /app
+COPY --from=builder /app/dist ./dist
 
-# 개발 모드 의존성 설치
 COPY package.json package-lock.json ./
 RUN npm install
 
-# 빌드된 결과물 복사
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/src ./src
-COPY --from=builder /app/vite.config.js ./
-COPY --from=builder /app/index.html ./
-
 EXPOSE 5173
 
-# 개발 서버 실행 (핫 리로딩 지원)
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--base=/vid_craw/"]
+# serve 설치 및 실행 (타임아웃 증가)
+RUN npm install -g serve
+CMD ["serve", "-s", "dist", "-l", "5173", "--no-request-logging", "--timeout", "3600000"]
