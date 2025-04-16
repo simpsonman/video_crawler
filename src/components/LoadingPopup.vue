@@ -5,10 +5,9 @@
         <h3>{{ title }}</h3>
         <p>{{ message }}</p>
 
-        <div class="progress-container">
-          <div class="progress-bar" :style="{ width: `${progress}%` }"></div>
+        <div class="spinner-container">
+          <el-icon class="spinner"><Loading /></el-icon>
         </div>
-        <div class="progress-text">{{ progress }}%</div>
 
         <div v-if="speedInfo || etaInfo" class="download-info">
           <div v-if="speedInfo" class="speed-info">
@@ -37,6 +36,7 @@
 
 <script setup>
 import { defineProps, defineEmits } from 'vue'
+import { Loading } from '@element-plus/icons-vue'
 
 const props = defineProps({
   visible: {
@@ -114,25 +114,25 @@ p {
   color: #606266;
 }
 
-.progress-container {
-  margin-top: 16px;
-  height: 8px;
-  background-color: #e4e7ed;
-  border-radius: 4px;
-  overflow: hidden;
+.spinner-container {
+  display: flex;
+  justify-content: center;
+  margin: 20px 0;
 }
 
-.progress-bar {
-  height: 100%;
-  background-color: #409eff;
-  transition: width 0.3s ease;
+.spinner {
+  font-size: 32px;
+  color: #409eff;
+  animation: rotate 1.5s linear infinite;
 }
 
-.progress-text {
-  margin-top: 8px;
-  text-align: right;
-  font-size: 14px;
-  color: #606266;
+@keyframes rotate {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 .download-info {
